@@ -32,6 +32,8 @@ jobs:
         run: s/lint
       - name: Test
         run: s/test
+        env:
+          BAKEDOCS_CHROMIUM: google-chrome
 
   licensing:
     name: REUSE licensing

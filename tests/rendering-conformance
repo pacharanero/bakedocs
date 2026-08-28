@@ -31,8 +31,13 @@ document_pdf="$temp_dir/document.pdf"
   --brands-dir "$root/examples/brands" --offline --output "$document_html" > /dev/null
 "$root/bakedocs" slides "$root/fixtures/slides.md" example \
   --brands-dir "$root/examples/brands" --output "$slides_html" > /dev/null
-"$root/bakedocs" pdf "$root/fixtures/document.md" example \
-  --brands-dir "$root/examples/brands" --offline --output "$document_pdf" > /dev/null 2> "$temp_dir/pdf-render-diagnostics.txt"
+if ! "$root/bakedocs" pdf "$root/fixtures/document.md" example \
+  --brands-dir "$root/examples/brands" --offline --output "$document_pdf" > /dev/null 2> "$temp_dir/pdf-render-diagnostics.txt"; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line" >&2
+  done < "$temp_dir/pdf-render-diagnostics.txt"
+  fail 'real Chromium PDF render did not complete'
+fi
 
 assert_contains '<!doctype html>' "$document_html"
 assert_contains '<html lang="en-GB">' "$document_html"
