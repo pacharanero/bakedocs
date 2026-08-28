@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Report which evaluated rendering tools are available on the current PATH.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+for tool in pandoc chromium weasyprint vivliostyle; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    version="$($tool --version 2>&1 | while IFS= read -r line; do printf '%s' "$line"; break; done)"
+    printf '%-14s available  %s\n' "$tool" "$version"
+  else
+    printf '%-14s unavailable\n' "$tool"
+  fi
+done

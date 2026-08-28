@@ -1,0 +1,711 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+readonly bakedocs_version="0.1.0-dev"
+readonly revealjs_url="https://cdn.jsdelivr.net/npm/reveal.js@6.0.1"
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" == /* ]] || script_path="$script_dir/$script_path"
+done
+script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
+invocation_dir="$PWD"
+brands_dir_option=""
+brands_dir_option_set=false
+output_option=""
+output_option_set=false
+offline=false
+temp_dir=""
+render_timeout="${BAKEDOCS_RENDER_TIMEOUT:-120}"
+
+fail() {
+  local message="$1"
+  local status="${2:-1}"
+  printf 'bakedocs: %s\n' "$message" >&2
+  exit "$status"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bakedocs pdf <SOURCE> <BRAND-ID> [--output <PATH>]
+  bakedocs html <SOURCE> <BRAND-ID> [--output <PATH>]
+  bakedocs slides <SOURCE> <BRAND-ID> [--output <PATH>]
+  bakedocs brands list [--brands-dir <PATH>]
+  bakedocs brands show <BRAND-ID> [--brands-dir <PATH>]
+  bakedocs check [--brands-dir <PATH>]
+  bakedocs version
+
+Options:
+      --brands-dir <PATH>  Use only this brand-profile root
+      --output <PATH>      Write the rendered artefact to PATH
+      --offline            Reject output that requires remote resources
+  -h, --help               Print help
+  -V, --version            Print the version
+EOF
+}
+
+cleanup() {
+  if [[ -n "$temp_dir" && -d "$temp_dir" ]]; then
+    rm -rf "$temp_dir"
+  fi
+}
+
+expand_path() {
+  local path="$1"
+
+  case "$path" in
+    '~')
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; cannot expand ~'
+      printf '%s\n' "$HOME"
+      ;;
+    '~/'*)
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; cannot expand ~/'
+      printf '%s/%s\n' "$HOME" "${path#\~/}"
+      ;;
+    \~*)
+      fail "~user paths are not supported: $path" 2
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+absolute_path() {
+  local path="$1"
+
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s/%s\n' "$invocation_dir" "$path"
+  fi
+}
+
+validate_brand_id() {
+  local brand_id="$1"
+  [[ "$brand_id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid brand ID: $brand_id" 2
+}
+
+selected_brand_root() {
+  local root
+
+  if [[ "$brands_dir_option_set" == true ]]; then
+    root="$(absolute_path "$(expand_path "$brands_dir_option")")"
+    [[ -d "$root" ]] || fail "explicit brand root does not exist: $brands_dir_option" 2
+    printf '%s\n' "$root"
+    return
+  fi
+
+  if [[ -n "${BAKEDOCS_BRANDS_DIR:-}" ]]; then
+    root="$(absolute_path "$(expand_path "$BAKEDOCS_BRANDS_DIR")")"
+    [[ -d "$root" ]] || fail "BAKEDOCS_BRANDS_DIR does not exist: $BAKEDOCS_BRANDS_DIR" 2
+    printf '%s\n' "$root"
+  fi
+}
+
+discovered_brand_roots() {
+  local selected_root
+  local config_home
+
+  selected_root="$(selected_brand_root)" || return $?
+  if [[ -n "$selected_root" ]]; then
+    printf '%s\n' "$selected_root"
+    return
+  fi
+
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    config_home="$(absolute_path "$(expand_path "$XDG_CONFIG_HOME")")"
+  elif [[ -n "${HOME:-}" ]]; then
+    config_home="$HOME/.config"
+  else
+    config_home=""
+  fi
+
+  [[ -d "$invocation_dir/brands" ]] && printf '%s\n' "$invocation_dir/brands"
+  [[ -n "$config_home" && -d "$config_home/bakedocs/brands" ]] && printf '%s\n' "$config_home/bakedocs/brands"
+}
+
+validate_brand_profile() {
+  local brand_dir="$1"
+  [[ -f "$brand_dir/brand.yml" && -f "$brand_dir/tokens.css" ]]
+}
+
+resolve_brand() {
+  local brand_id="$1"
+  local root
+  local selected_root
+
+  validate_brand_id "$brand_id"
+  selected_root="$(selected_brand_root)" || return $?
+
+  if [[ -n "$selected_root" ]]; then
+    validate_brand_profile "$selected_root/$brand_id" || fail "brand '$brand_id' is missing brand.yml or tokens.css under $selected_root" 2
+    printf '%s\n' "$selected_root/$brand_id"
+    return
+  fi
+
+  while IFS= read -r root; do
+    if validate_brand_profile "$root/$brand_id"; then
+      printf '%s\n' "$root/$brand_id"
+      return
+    fi
+  done < <(discovered_brand_roots)
+
+  fail "unknown brand: $brand_id" 2
+}
+
+list_brands() {
+  local root
+  local brand_dir
+  local brand_id
+  local listed=$'\n'
+  local found=false
+
+  selected_brand_root > /dev/null || return $?
+
+  while IFS= read -r root; do
+    for brand_dir in "$root"/*; do
+      [[ -d "$brand_dir" ]] || continue
+      validate_brand_profile "$brand_dir" || continue
+      brand_id="${brand_dir##*/}"
+      [[ "$brand_id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || continue
+      [[ "$listed" == *$'\n'"$brand_id"$'\n'* ]] && continue
+      printf '%s\n' "$brand_id"
+      listed+="$brand_id"$'\n'
+      found=true
+    done
+  done < <(discovered_brand_roots)
+
+  [[ "$found" == true ]] || fail 'no valid brand profiles found' 1
+}
+
+yaml_scalar() {
+  local key="$1"
+  local file="$2"
+  local line
+  local value
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ "$line" == "$key:"* ]] || continue
+    value="${line#*:}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ "$value" == \"*\" || "$value" == \'*\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf '%s\n' "$value"
+    return
+  done < "$file"
+}
+
+brand_style() {
+  local brand_dir="$1"
+  local kind="$2"
+  local override="$brand_dir/$kind.css"
+
+  if [[ -f "$override" ]]; then
+    printf '%s\n' "$override"
+  else
+    printf '%s/styles/%s.css\n' "$script_dir" "$kind"
+  fi
+}
+
+remote_profile_assets_present() {
+  local brand_dir="$1"
+  local css_file
+  local declaration
+  local compact
+  local lower_declaration
+  local resource
+  local logo
+
+  logo="$(yaml_scalar logo "$brand_dir/brand.yml")"
+  [[ "$logo" == *://* || "$logo" == //* ]] && return 0
+
+  for css_file in "$brand_dir"/*.css; do
+    while IFS= read -r declaration; do
+      compact="${declaration//[[:space:]\"\']/}"
+      lower_declaration="${compact,,}"
+      if [[ "$lower_declaration" == url\(* ]]; then
+        resource="${lower_declaration#url(}"
+        resource="${resource%)}"
+      else
+        resource="${lower_declaration#@import}"
+        resource="${resource%;}"
+      fi
+      [[ "$resource" == data:* ]] && continue
+      [[ "$resource" == *:* || "$resource" == //* || "$resource" == *\\* ]] && return 0
+    done < <(grep -Eio '@import[^;]*;|url[[:space:]]*\([^)]*\)' "$css_file" || true)
+  done
+
+  return 1
+}
+
+find_pandoc() {
+  local configured
+
+  if [[ -n "${BAKEDOCS_PANDOC:-}" ]]; then
+    configured="$(expand_path "$BAKEDOCS_PANDOC")"
+    if [[ "$configured" == */* ]]; then
+      [[ -x "$configured" ]] || return 1
+      printf '%s\n' "$configured"
+      return
+    fi
+    command -v "$configured" 2>/dev/null
+    return
+  fi
+
+  command -v pandoc 2>/dev/null
+}
+
+find_chromium() {
+  local configured
+  local candidate
+
+  if [[ -n "${BAKEDOCS_CHROMIUM:-}" ]]; then
+    configured="$(expand_path "$BAKEDOCS_CHROMIUM")"
+    if [[ "$configured" == */* ]]; then
+      [[ -x "$configured" ]] || return 1
+      printf '%s\n' "$configured"
+      return
+    fi
+    command -v "$configured" 2>/dev/null
+    return
+  fi
+
+  for candidate in chromium chromium-browser google-chrome google-chrome-stable; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+
+  return 1
+}
+
+first_version_line() {
+  local executable="$1"
+  local line
+  local version_file="$temp_dir/version-$RANDOM.txt"
+
+  run_bounded version "$executable" --version > "$version_file"
+  IFS= read -r line < "$version_file" || true
+  printf '%s\n' "$line"
+}
+
+run_bounded() {
+  local label="$1"
+  shift
+  local timeout_executable
+  local marker="$temp_dir/$label.timeout"
+  local process_id
+  local timer_id
+  local status
+
+  timeout_executable="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+  if [[ -n "$timeout_executable" ]]; then
+    set +e
+    "$timeout_executable" --signal=TERM --kill-after=2 "$render_timeout" "$@"
+    status=$?
+    set -e
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+      fail "$label exceeded the ${render_timeout}s render timeout" 124
+    fi
+    return "$status"
+  fi
+
+  "$@" &
+  process_id=$!
+  (
+    sleep "$render_timeout"
+    if kill -0 "$process_id" 2>/dev/null; then
+      : > "$marker"
+      kill -TERM "$process_id" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$process_id" 2>/dev/null || true
+    fi
+  ) > /dev/null 2>&1 &
+  timer_id=$!
+
+  set +e
+  wait "$process_id"
+  status=$?
+  set -e
+  kill "$timer_id" 2>/dev/null || true
+
+  [[ ! -e "$marker" ]] || fail "$label exceeded the ${render_timeout}s render timeout" 124
+  return "$status"
+}
+
+render_document_html() {
+  local source="$1"
+  local brand_dir="$2"
+  local target="$3"
+  local source_dir="${source%/*}"
+  local document_style
+  local offline_flag=0
+  local pandoc_executable
+  local -a pandoc_args
+
+  document_style="$(brand_style "$brand_dir" document)"
+  pandoc_executable="$(find_pandoc)" || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
+  [[ "$offline" == true ]] && offline_flag=1
+  pandoc_args=(
+    "$source"
+    --from=markdown-raw_html-raw_attribute
+    --to=html5
+    --standalone
+    --embed-resources
+    --toc
+    --metadata-file="$brand_dir/brand.yml"
+    --template="$script_dir/templates/document.html"
+    --resource-path="$source_dir:$brand_dir"
+    --lua-filter="$script_dir/filters/resources.lua"
+    --css="$brand_dir/tokens.css"
+    --css="$document_style"
+    --output="$target"
+  )
+
+  run_bounded pandoc env \
+    BAKEDOCS_BRAND_DIR="$brand_dir" \
+    BAKEDOCS_EMBED_LOCAL_IMAGES=0 \
+    BAKEDOCS_OFFLINE="$offline_flag" \
+    "$pandoc_executable" "${pandoc_args[@]}"
+}
+
+render_slides_html() {
+  local source="$1"
+  local brand_dir="$2"
+  local target="$3"
+  local reveal_style
+  local style_header="$temp_dir/reveal-styles.html"
+  local pandoc_executable
+
+  reveal_style="$(brand_style "$brand_dir" reveal)"
+  pandoc_executable="$(find_pandoc)" || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
+  {
+    printf '<style>\n'
+    cat "$brand_dir/tokens.css"
+    cat "$reveal_style"
+    printf '</style>\n'
+  } > "$style_header"
+
+  run_bounded pandoc env \
+    BAKEDOCS_BRAND_DIR="$brand_dir" \
+    BAKEDOCS_EMBED_LOCAL_IMAGES=1 \
+    BAKEDOCS_OFFLINE=0 \
+    "$pandoc_executable" "$source" \
+    --from=markdown-raw_html-raw_attribute \
+    --to=revealjs \
+    --standalone \
+    --slide-level=2 \
+    --template="$script_dir/templates/reveal.html" \
+    --include-in-header="$style_header" \
+    --resource-path="${source%/*}:$brand_dir" \
+    --lua-filter="$script_dir/filters/resources.lua" \
+    --variable="revealjs-url:$revealjs_url" \
+    --output="$target"
+}
+
+render_pdf() {
+  local source="$1"
+  local brand_dir="$2"
+  local target="$3"
+  local intermediate="$temp_dir/intermediate.html"
+  local profile="$temp_dir/chromium-profile"
+  local chromium
+  local -a command_args
+
+  chromium="$(find_chromium)" || fail 'Chromium is required for PDF output; install it or set BAKEDOCS_CHROMIUM' 127
+
+  render_document_html "$source" "$brand_dir" "$intermediate"
+  if grep -Eiq '<(script|iframe|object|embed)([[:space:]>])' "$intermediate"; then
+    fail 'print HTML contains executable content and was not passed to Chromium' 2
+  fi
+  mkdir -p "$profile"
+  command_args=(
+    "$chromium"
+    --headless
+    --disable-gpu
+    --disable-javascript
+    --no-pdf-header-footer
+    "--user-data-dir=$profile"
+    "--print-to-pdf=$target"
+    "file://$intermediate"
+  )
+
+  run_bounded chromium "${command_args[@]}" 1>&2
+}
+
+default_output_path() {
+  local source="$1"
+  local kind="$2"
+  local directory=""
+  local basename="$source"
+  local stem
+
+  if [[ "$source" == */* ]]; then
+    directory="${source%/*}/"
+    basename="${source##*/}"
+  fi
+
+  if [[ "$basename" == .* ]]; then
+    if [[ "${basename#.}" == *.* ]]; then
+      stem=".${basename#.}"
+      stem="${stem%.*}"
+    else
+      stem="$basename"
+    fi
+  elif [[ "$basename" == *.* ]]; then
+    stem="${basename%.*}"
+  else
+    stem="$basename"
+  fi
+
+  case "$kind" in
+    pdf) printf '%s%s.pdf\n' "$directory" "$stem" ;;
+    html|slides) printf '%s%s.html\n' "$directory" "$stem" ;;
+  esac
+}
+
+render_command() {
+  local kind="$1"
+  local source_input="$2"
+  local brand_id="$3"
+  local source_path
+  local source_absolute
+  local output_path
+  local output_absolute
+  local output_parent
+  local brand_dir
+  local staged_output
+  local staged_extension
+
+  source_path="$(expand_path "$source_input")"
+  source_absolute="$(absolute_path "$source_path")"
+  [[ -f "$source_absolute" && -r "$source_absolute" ]] || fail "source is not a readable file: $source_input" 2
+
+  if [[ "$output_option_set" == true ]]; then
+    output_path="$(expand_path "$output_option")"
+  else
+    output_path="$(default_output_path "$source_path" "$kind")"
+  fi
+  output_absolute="$(absolute_path "$output_path")"
+  if [[ "$output_absolute" == "$source_absolute" || ( -e "$output_absolute" && "$output_absolute" -ef "$source_absolute" ) ]]; then
+    fail 'output path would overwrite the source; use --output' 2
+  fi
+  [[ ! -d "$output_absolute" ]] || fail "output path is a directory: $output_path" 2
+  output_parent="${output_absolute%/*}"
+  [[ -d "$output_parent" && -w "$output_parent" ]] || fail "output directory is not writable: $output_parent" 2
+
+  brand_dir="$(resolve_brand "$brand_id")"
+  find_pandoc >/dev/null || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
+  [[ "$render_timeout" =~ ^[1-9][0-9]*$ ]] || fail 'BAKEDOCS_RENDER_TIMEOUT must be a positive integer' 2
+
+  if [[ "$offline" == true ]]; then
+    [[ "$kind" != slides ]] || fail 'slides require the pinned Reveal.js CDN and cannot be rendered with --offline' 2
+    remote_profile_assets_present "$brand_dir" && fail 'remote brand assets are not permitted with --offline' 2
+  fi
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs.XXXXXXXX")"
+  trap cleanup EXIT
+  if [[ "$kind" == pdf ]]; then
+    staged_extension="pdf"
+  else
+    staged_extension="html"
+  fi
+  staged_output="$temp_dir/output.$staged_extension"
+
+  case "$kind" in
+    html) render_document_html "$source_absolute" "$brand_dir" "$staged_output" ;;
+    pdf) render_pdf "$source_absolute" "$brand_dir" "$staged_output" ;;
+    slides) render_slides_html "$source_absolute" "$brand_dir" "$staged_output" ;;
+  esac
+
+  [[ -s "$staged_output" ]] || fail "$kind renderer did not produce a non-empty artefact" 1
+  mv "$staged_output" "$output_absolute"
+  printf '%s\n' "$output_path"
+}
+
+check_command() {
+  local status=0
+  local chromium
+  local pandoc_executable
+  local brand_id
+  local brand_dir
+  local logo
+  local logo_path
+  local brands
+  local version
+  local version_status
+
+  [[ "$render_timeout" =~ ^[1-9][0-9]*$ ]] || fail 'BAKEDOCS_RENDER_TIMEOUT must be a positive integer' 2
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-check.XXXXXXXX")"
+  trap cleanup EXIT
+
+  printf 'bakedocs: %s\n' "$bakedocs_version"
+  printf 'data root: %s\n' "$script_dir"
+
+  if pandoc_executable="$(find_pandoc)"; then
+    set +e
+    version="$(first_version_line "$pandoc_executable")"
+    version_status=$?
+    set -e
+    [[ "$version_status" -eq 0 ]] || return "$version_status"
+    printf 'pandoc: available (%s)\n' "$version"
+  else
+    printf 'pandoc: unavailable\n'
+    status=1
+  fi
+
+  if chromium="$(find_chromium)"; then
+    set +e
+    version="$(first_version_line "$chromium")"
+    version_status=$?
+    set -e
+    [[ "$version_status" -eq 0 ]] || return "$version_status"
+    printf 'chromium: available (%s)\n' "$version"
+  else
+    printf 'chromium: unavailable\n'
+    status=1
+  fi
+
+  brands="$(list_brands)" || status=1
+  if [[ -n "$brands" ]]; then
+    printf 'brands:\n'
+    while IFS= read -r brand_id; do
+      [[ -n "$brand_id" ]] || continue
+      brand_dir="$(resolve_brand "$brand_id")"
+      logo="$(yaml_scalar logo "$brand_dir/brand.yml")"
+      if [[ -z "$logo" ]]; then
+        printf '  %s: ready (%s; no logo)\n' "$brand_id" "$brand_dir"
+      elif [[ "$logo" == http://* || "$logo" == https://* ]]; then
+        printf '  %s: remote logo (%s; %s)\n' "$brand_id" "$logo" "$brand_dir"
+      else
+        logo="$(expand_path "$logo")"
+        if [[ "$logo" == /* ]]; then
+          logo_path="$logo"
+        else
+          logo_path="$brand_dir/$logo"
+        fi
+        if [[ -r "$logo_path" ]]; then
+          printf '  %s: ready (%s)\n' "$brand_id" "$brand_dir"
+        else
+          printf '  %s: missing logo (%s)\n' "$brand_id" "$logo_path"
+          status=1
+        fi
+      fi
+    done <<< "$brands"
+  fi
+
+  printf 'slides remote resources: required (%s)\n' "$revealjs_url"
+  return "$status"
+}
+
+remaining=()
+while (($#)); do
+  case "$1" in
+    --brands-dir)
+      (($# >= 2)) || fail '--brands-dir requires a path' 2
+      brands_dir_option="$2"
+      brands_dir_option_set=true
+      shift 2
+      ;;
+    --brands-dir=*)
+      brands_dir_option="${1#*=}"
+      [[ -n "$brands_dir_option" ]] || fail '--brands-dir requires a non-empty path' 2
+      brands_dir_option_set=true
+      shift
+      ;;
+    --output)
+      (($# >= 2)) || fail '--output requires a path' 2
+      output_option="$2"
+      output_option_set=true
+      shift 2
+      ;;
+    --output=*)
+      output_option="${1#*=}"
+      [[ -n "$output_option" ]] || fail '--output requires a non-empty path' 2
+      output_option_set=true
+      shift
+      ;;
+    --offline)
+      offline=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -V|--version)
+      printf 'bakedocs %s\n' "$bakedocs_version"
+      exit 0
+      ;;
+    --)
+      shift
+      remaining+=("$@")
+      break
+      ;;
+    -* )
+      fail "unknown option: $1" 2
+      ;;
+    *)
+      remaining+=("$1")
+      shift
+      ;;
+  esac
+done
+
+set -- "${remaining[@]}"
+command_name="${1:-}"
+
+if [[ -z "$command_name" ]]; then
+  usage
+  exit 0
+fi
+
+case "$command_name" in
+  pdf|html|slides)
+    (($# == 3)) || fail "$command_name requires SOURCE and BRAND-ID" 2
+    render_command "$command_name" "$2" "$3"
+    ;;
+  brands)
+    [[ "$output_option_set" == false && "$offline" == false ]] || fail '--output and --offline apply only to rendering commands' 2
+    case "${2:-}" in
+      list)
+        (($# == 2)) || fail 'brands list takes no positional arguments' 2
+        list_brands
+        ;;
+      show)
+        (($# == 3)) || fail 'brands show requires BRAND-ID' 2
+        brand_dir="$(resolve_brand "$3")"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          printf '%s\n' "$line"
+        done < "$brand_dir/brand.yml"
+        ;;
+      *)
+        fail 'brands requires list or show' 2
+        ;;
+    esac
+    ;;
+  check)
+    (($# == 1)) || fail 'check takes no positional arguments' 2
+    [[ "$output_option_set" == false && "$offline" == false ]] || fail '--output and --offline apply only to rendering commands' 2
+    check_command
+    ;;
+  version)
+    (($# == 1)) || fail 'version takes no positional arguments' 2
+    [[ "$brands_dir_option_set" == false && "$output_option_set" == false && "$offline" == false ]] || fail 'version does not accept rendering options' 2
+    printf 'bakedocs %s\n' "$bakedocs_version"
+    ;;
+  *)
+    fail "unknown command: $command_name" 2
+    ;;
+esac

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Regenerate synthetic bakeoff output for every selected brand profile.
+# Pandoc and Chromium must already be installed and available on PATH.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+brands_dir="${BAKEDOCS_BRANDS_DIR:-$root/examples/brands}"
+found=false
+
+[[ -d "$brands_dir" ]] || {
+  printf 'Brand root does not exist: %s\n' "$brands_dir" >&2
+  exit 1
+}
+
+for brand_dir in "$brands_dir"/*; do
+  [[ -d "$brand_dir" ]] || continue
+  BAKEDOCS_BRANDS_DIR="$brands_dir" "$root/s/render" "${brand_dir##*/}"
+  found=true
+done
+
+[[ "$found" == true ]] || {
+  printf 'No brand profiles found under: %s\n' "$brands_dir" >&2
+  exit 1
+}

@@ -1,0 +1,90 @@
+/* SPDX-FileCopyrightText: 2026 Marcus Baw */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.reveal {
+  color: var(--brand-ink);
+  font-family: var(--brand-body-font);
+  font-size: 32px;
+}
+
+.reveal-viewport {
+  background: color-mix(in srgb, var(--brand-surface) 55%, white);
+}
+
+.reveal .slides section {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 48px 64px !important;
+  text-align: left;
+}
+
+.reveal h1,
+.reveal h2,
+.reveal h3 {
+  color: var(--brand-primary);
+  font-family: var(--brand-heading-font);
+  font-weight: 650;
+  line-height: 1.12;
+  text-transform: none;
+}
+
+.reveal h1 {
+  border-bottom: 7px solid var(--brand-accent);
+  font-size: 62px;
+  padding-bottom: 18px;
+}
+
+.reveal h2 {
+  border-bottom: 3px solid var(--brand-accent);
+  font-size: 46px;
+  padding-bottom: 12px;
+}
+
+.reveal p,
+.reveal li {
+  font-size: 30px;
+  line-height: 1.45;
+}
+
+.reveal li::marker {
+  color: var(--brand-highlight);
+}
+
+.reveal pre {
+  background: #202428;
+  border-left: 8px solid var(--brand-accent);
+  box-shadow: none;
+  color: #f5f5f5;
+  font-size: 22px;
+  padding: 22px;
+  width: auto;
+}
+
+.reveal code {
+  font-family: "DejaVu Sans Mono", monospace;
+}
+
+.reveal .progress {
+  color: var(--brand-accent);
+}
+
+.reveal .controls {
+  color: var(--brand-primary);
+}
+
+@media (max-width: 700px) and (orientation: portrait) {
+  .reveal::before {
+    background: var(--brand-primary);
+    color: white;
+    content: "Rotate your device to view the presentation";
+    display: block;
+    font-size: 16px;
+    left: 0;
+    padding: 12px;
+    position: fixed;
+    right: 0;
+    text-align: center;
+    top: 0;
+    z-index: 100;
+  }
+}

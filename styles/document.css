@@ -1,0 +1,210 @@
+/* SPDX-FileCopyrightText: 2026 Marcus Baw */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+@page {
+  size: A4;
+  margin: 18mm 18mm 22mm;
+}
+
+html {
+  color: var(--brand-ink);
+  font-family: var(--brand-body-font);
+  font-size: 10.5pt;
+  line-height: 1.48;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 178mm;
+}
+
+#title-block-header {
+  border-top: 9px solid var(--brand-primary);
+  min-height: 88mm;
+  padding-top: 18mm;
+  position: relative;
+}
+
+.brand-logo {
+  display: block;
+  height: 24mm;
+  margin: 0 0 20mm;
+  max-width: 82mm;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.title {
+  border: 0;
+  font-size: 29pt;
+  margin-bottom: 4mm;
+  padding: 0;
+}
+
+.subtitle {
+  color: var(--brand-primary);
+  font-size: 14pt;
+  margin-bottom: 12mm;
+}
+
+.document-metadata {
+  border-left: 4px solid var(--brand-accent);
+  display: grid;
+  font-size: 9pt;
+  gap: 2mm 5mm;
+  grid-template-columns: max-content 1fr;
+  margin-top: 12mm;
+  padding: 4mm 5mm;
+}
+
+.document-metadata dt {
+  font-weight: 700;
+}
+
+.document-metadata dd {
+  margin: 0;
+}
+
+.abstract {
+  background: var(--brand-surface);
+  border-top: 1px solid var(--brand-accent);
+  margin-top: 10mm;
+  padding: 5mm;
+}
+
+.abstract-title {
+  color: var(--brand-primary);
+  font-family: var(--brand-heading-font);
+  font-size: 12pt;
+  font-weight: 700;
+  margin-bottom: 2mm;
+}
+
+#TOC {
+  break-after: page;
+  break-before: page;
+}
+
+h1,
+h2,
+h3 {
+  break-after: avoid;
+  color: var(--brand-primary);
+  font-family: var(--brand-heading-font);
+  line-height: 1.18;
+}
+
+h1 {
+  border-bottom: 3px solid var(--brand-accent);
+  font-size: 22pt;
+  margin: 0 0 16pt;
+  padding-bottom: 7pt;
+}
+
+h2 {
+  font-size: 15pt;
+  margin: 18pt 0 6pt;
+}
+
+h3 {
+  color: var(--brand-highlight);
+  font-size: 12pt;
+  margin: 14pt 0 5pt;
+}
+
+p {
+  margin: 0 0 8pt;
+  orphans: 3;
+  widows: 3;
+}
+
+ul,
+ol {
+  margin: 0 0 8pt;
+  padding-left: 18pt;
+}
+
+li {
+  margin-bottom: 3pt;
+}
+
+a {
+  color: var(--brand-primary);
+  text-decoration-color: var(--brand-accent);
+  text-underline-offset: 2px;
+}
+
+table {
+  border-collapse: collapse;
+  break-inside: auto;
+  font-size: 8.2pt;
+  margin: 8pt 0 12pt;
+  width: 100%;
+}
+
+th,
+td {
+  border: 1px solid color-mix(in srgb, var(--brand-primary) 22%, white);
+  padding: 5pt;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--brand-surface);
+  color: var(--brand-primary);
+}
+
+tr {
+  break-inside: avoid;
+}
+
+code {
+  background: var(--brand-surface);
+  border-radius: 2px;
+  font-family: "DejaVu Sans Mono", monospace;
+  font-size: 9pt;
+  padding: 1pt 3pt;
+}
+
+pre {
+  background: #202428;
+  border-left: 5px solid var(--brand-accent);
+  color: #f5f5f5;
+  overflow-wrap: anywhere;
+  padding: 10pt;
+  white-space: pre-wrap;
+}
+
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+blockquote {
+  background: var(--brand-surface);
+  border-left: 5px solid var(--brand-highlight);
+  margin: 10pt 0;
+  padding: 7pt 12pt;
+}
+
+blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.page-break {
+  break-after: page;
+}
+
+@media screen {
+  body {
+    padding: 12mm 18mm;
+  }
+}
+
+@media print {
+  body {
+    max-width: none;
+  }
+}

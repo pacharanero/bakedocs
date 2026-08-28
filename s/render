@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Render the synthetic document and slide fixtures for one selected brand.
+# Pandoc and Chromium must already be installed and available on PATH.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+brand="${1:-example}"
+brands_dir="${BAKEDOCS_BRANDS_DIR:-$root/examples/brands}"
+output_dir="$root/out/$brand"
+
+mkdir -p "$output_dir"
+
+"$root/bakedocs" html "$root/fixtures/document.md" "$brand" \
+  --brands-dir "$brands_dir" \
+  --output "$output_dir/document.html" > /dev/null
+
+"$root/bakedocs" pdf "$root/fixtures/document.md" "$brand" \
+  --brands-dir "$brands_dir" \
+  --output "$output_dir/document-chromium.pdf" > /dev/null
+
+"$root/bakedocs" slides "$root/fixtures/slides.md" "$brand" \
+  --brands-dir "$brands_dir" \
+  --output "$output_dir/slides.html" > /dev/null
+
+printf 'Rendered %s to %s\n' "$brand" "$output_dir"

@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-test.XXXXXXXX")"
+trap 'rm -rf "$temp_dir"' EXIT
+
+fail() {
+  printf 'command-surface test failed: %s\n' "$1" >&2
+  exit 1
+}
+
+assert_equal() {
+  local expected="$1"
+  local actual="$2"
+  local context="$3"
+  [[ "$actual" == "$expected" ]] || fail "$context: expected '$expected', got '$actual'"
+}
+
+assert_contains() {
+  local needle="$1"
+  local file="$2"
+  grep -Fq "$needle" "$file" || fail "$file does not contain: $needle"
+}
+
+brand_root="$temp_dir/brand root"
+work_dir="$temp_dir/work space"
+mkdir -p "$brand_root/test/assets" "$work_dir"
+
+cat > "$brand_root/test/brand.yml" <<'EOF'
+brand-name: "Test Organisation"
+logo: "assets/logo.svg"
+EOF
+
+cat > "$brand_root/test/tokens.css" <<'EOF'
+:root {
+  --brand-primary: #123456;
+  --brand-accent: #2878a0;
+  --brand-highlight: #765432;
+  --brand-surface: #f4f4f4;
+  --brand-ink: #111111;
+  --brand-heading-font: sans-serif;
+  --brand-body-font: sans-serif;
+  --brand-local-resource: url(assets/logo.svg);
+}
+EOF
+
+cat > "$brand_root/test/assets/logo.svg" <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10" role="img" aria-label="Test logo">
+  <rect width="20" height="10" fill="#123456"/>
+</svg>
+EOF
+
+cp "$root/fixtures/document.md" "$work_dir/report source.md"
+cp "$root/fixtures/slides.md" "$work_dir/slides source.md"
+cp "$brand_root/test/assets/logo.svg" "$work_dir/local-media.svg"
+cat >> "$work_dir/slides source.md" <<'EOF'
+
+# Local media
+
+![Local media][local-media]
+
+[local-media]: local-media.svg
+
+# Local background {data-background-image="local-media.svg"}
+EOF
+
+"$root/bakedocs" > "$temp_dir/help.txt"
+assert_contains 'bakedocs pdf <SOURCE> <BRAND-ID>' "$temp_dir/help.txt"
+assert_equal 'bakedocs 0.1.0-dev' "$("$root/bakedocs" --version)" '--version output'
+assert_equal 'bakedocs 0.1.0-dev' "$("$root/bakedocs" version)" 'version command output'
+assert_equal 'test' "$("$root/bakedocs" brands list --brands-dir "$brand_root")" 'explicit brand list'
+"$root/bakedocs" brands show test --brands-dir "$brand_root" > "$temp_dir/brand.txt"
+assert_contains 'brand-name: "Test Organisation"' "$temp_dir/brand.txt"
+
+config_home="$temp_dir/home"
+mkdir -p "$config_home/.config/bakedocs/brands"
+cp -R "$brand_root/test" "$config_home/.config/bakedocs/brands/test"
+actual_brands="$(cd "$work_dir" && env -u XDG_CONFIG_HOME HOME="$config_home" "$root/bakedocs" brands list)"
+assert_equal 'test' "$actual_brands" 'HOME config brand discovery'
+
+html_output="$work_dir/rendered report.html"
+actual_output="$("$root/bakedocs" html "$work_dir/report source.md" test --brands-dir "$brand_root" --offline --output "$html_output")"
+assert_equal "$html_output" "$actual_output" 'HTML output path'
+[[ -s "$html_output" ]] || fail 'HTML output is missing or empty'
+
+mkdir -p "$temp_dir/bin"
+ln -s "$root/bakedocs" "$temp_dir/bin/bakedocs"
+symlink_output="$work_dir/symlinked.html"
+"$temp_dir/bin/bakedocs" html "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" --offline --output "$symlink_output" > /dev/null
+[[ -s "$symlink_output" ]] || fail 'symlinked invocation output is missing or empty'
+assert_contains '<main>' "$html_output"
+assert_contains '<html lang="en-GB">' "$html_output"
+assert_contains '#123456' "$html_output"
+assert_contains 'data:image/svg+xml' "$html_output"
+
+default_output="$(cd "$work_dir" && "$root/bakedocs" html 'report source.md' test --brands-dir "$brand_root")"
+assert_equal 'report source.html' "$default_output" 'default output path'
+[[ -s "$work_dir/report source.html" ]] || fail 'default HTML output is missing or empty'
+
+extensionless_output="$work_dir/rendered-without-extension"
+actual_output="$("$root/bakedocs" html "$work_dir/report source.md" test --brands-dir "$brand_root" --output "$extensionless_output")"
+assert_equal "$extensionless_output" "$actual_output" 'extensionless output path'
+[[ -s "$extensionless_output" ]] || fail 'extensionless output is missing or empty'
+
+if "$root/bakedocs" html "$work_dir/report source.md" test --brands-dir "$brand_root" --output "$work_dir/report source.md" > /dev/null 2> "$temp_dir/overwrite-error.txt"; then
+  fail 'source overwrite unexpectedly succeeded'
+fi
+assert_contains 'output path would overwrite the source' "$temp_dir/overwrite-error.txt"
+
+slides_output="$work_dir/rendered slides.html"
+actual_output="$("$root/bakedocs" slides "$work_dir/slides source.md" test --brands-dir "$brand_root" --output "$slides_output")"
+assert_equal "$slides_output" "$actual_output" 'slides output path'
+assert_contains 'https://cdn.jsdelivr.net/npm/reveal.js@6.0.1/dist/reveal.mjs' "$slides_output"
+assert_contains '#123456' "$slides_output"
+assert_contains '<html lang="en-GB">' "$slides_output"
+assert_contains 'data:image/svg+xml;base64,' "$slides_output"
+if grep -Fq 'data-background-image="local-media.svg"' "$slides_output"; then
+  fail 'slides output contains a source-relative background image'
+fi
+if grep -Fq "$brand_root" "$slides_output"; then
+  fail 'slides output contains a machine-specific brand path'
+fi
+
+HOME="$work_dir" "$root/bakedocs" html "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" \
+  "--output=~/tilde-output.html" > "$temp_dir/tilde-stdout.txt"
+assert_equal "$work_dir/tilde-output.html" "$(< "$temp_dir/tilde-stdout.txt")" 'tilde output expansion'
+[[ -s "$work_dir/tilde-output.html" ]] || fail 'tilde output is missing or empty'
+
+if "$root/bakedocs" slides "$work_dir/slides source.md" test --brands-dir "$brand_root" --offline > /dev/null 2> "$temp_dir/offline-error.txt"; then
+  fail 'offline slides unexpectedly succeeded'
+fi
+assert_contains 'slides require the pinned Reveal.js CDN' "$temp_dir/offline-error.txt"
+
+if "$root/bakedocs" html "$work_dir/report source.md" unknown --brands-dir "$brand_root" > /dev/null 2> "$temp_dir/brand-error.txt"; then
+  fail 'unknown brand unexpectedly succeeded'
+fi
+assert_contains "brand 'unknown' is missing brand.yml or tokens.css" "$temp_dir/brand-error.txt"
+
+if "$root/bakedocs" html "$work_dir/missing.md" test --brands-dir "$brand_root" > /dev/null 2> "$temp_dir/source-error.txt"; then
+  fail 'missing source unexpectedly succeeded'
+fi
+assert_contains 'source is not a readable file' "$temp_dir/source-error.txt"
+
+mkdir -p "$temp_dir/empty-brands"
+if "$root/bakedocs" brands list --brands-dir "$temp_dir/empty-brands" > /dev/null 2> "$temp_dir/empty-error.txt"; then
+  fail 'empty explicit brand root unexpectedly fell back to another brand root'
+fi
+assert_contains 'no valid brand profiles found' "$temp_dir/empty-error.txt"
+
+if "$root/bakedocs" check --brands-dir "$temp_dir/missing-brands" > "$temp_dir/missing-check.txt" 2> "$temp_dir/missing-check-error.txt"; then
+  fail 'check unexpectedly accepted a missing explicit brand root'
+fi
+assert_contains 'explicit brand root does not exist' "$temp_dir/missing-check-error.txt"
+if grep -Fq 'brands:' "$temp_dir/missing-check.txt"; then
+  fail 'check fell through to discovered profiles after a missing explicit root'
+fi
+
+mkdir -p "$work_dir/client.v2"
+cp "$work_dir/report source.md" "$work_dir/client.v2/report"
+dotted_output="$(cd "$work_dir" && "$root/bakedocs" html client.v2/report test --brands-dir "$brand_root")"
+assert_equal 'client.v2/report.html' "$dotted_output" 'dotted-directory default output'
+[[ -s "$work_dir/client.v2/report.html" ]] || fail 'dotted-directory output is missing or empty'
+
+cp "$work_dir/report source.md" "$work_dir/.report"
+hidden_output="$(cd "$work_dir" && "$root/bakedocs" html .report test --brands-dir "$brand_root")"
+assert_equal '.report.html' "$hidden_output" 'hidden-file default output'
+[[ -s "$work_dir/.report.html" ]] || fail 'hidden-file output is missing or empty'
+
+if "$root/bakedocs" html "$work_dir/report source.md" test --brands-dir "$brand_root" --output "$work_dir" > /dev/null 2> "$temp_dir/directory-error.txt"; then
+  fail 'directory output unexpectedly succeeded'
+fi
+assert_contains 'output path is a directory' "$temp_dir/directory-error.txt"
+
+cat > "$work_dir/remote-image.md" <<'EOF'
+---
+title: "Remote image"
+---
+
+![Remote image][remote-image]
+
+[remote-image]: https://example.invalid/image.png
+EOF
+if "$root/bakedocs" html "$work_dir/remote-image.md" test --brands-dir "$brand_root" --offline --output "$work_dir/remote.html" > /dev/null 2> "$temp_dir/remote-error.txt"; then
+  fail 'offline reference-style remote image unexpectedly succeeded'
+fi
+assert_contains 'remote image is not permitted in offline mode' "$temp_dir/remote-error.txt"
+
+mkdir -p "$brand_root/remote-css"
+cat > "$brand_root/remote-css/brand.yml" <<'EOF'
+brand-name: "Remote CSS"
+EOF
+cat > "$brand_root/remote-css/tokens.css" <<'EOF'
+:root {
+  --brand-primary: #123456;
+  background-image: url(https\3a //example.invalid/background.png);
+}
+EOF
+if "$root/bakedocs" html "$work_dir/report source.md" remote-css --brands-dir "$brand_root" --offline --output "$work_dir/remote-css.html" > /dev/null 2> "$temp_dir/remote-css-error.txt"; then
+  fail 'offline CSS URL unexpectedly succeeded'
+fi
+assert_contains 'remote brand assets are not permitted with --offline' "$temp_dir/remote-css-error.txt"
+
+cat > "$work_dir/raw-html.md" <<'EOF'
+---
+title: "Raw HTML"
+---
+
+<script>document.body.dataset.executed = "true";</script>
+
+```{=html}
+<script>document.body.dataset.rawAttributeExecuted = "true";</script>
+```
+EOF
+"$root/bakedocs" html "$work_dir/raw-html.md" test --brands-dir "$brand_root" --output "$work_dir/raw-html.html" > /dev/null
+if grep -Fq '<script>document.body.dataset.' "$work_dir/raw-html.html"; then
+  fail 'source raw HTML remained executable in document output'
+fi
+
+cat > "$work_dir/untitled.md" <<'EOF'
+# Untitled source
+EOF
+if "$root/bakedocs" html "$work_dir/untitled.md" test --brands-dir "$brand_root" --output "$work_dir/untitled.html" > /dev/null 2> "$temp_dir/title-error.txt"; then
+  fail 'untitled source unexpectedly succeeded'
+fi
+assert_contains 'source metadata requires a non-empty title' "$temp_dir/title-error.txt"
+
+cat > "$work_dir/unsafe-attributes.md" <<'EOF'
+---
+title: "Unsafe attributes"
+---
+
+[Event handler](#){onclick="alert(1)"}
+EOF
+if "$root/bakedocs" html "$work_dir/unsafe-attributes.md" test --brands-dir "$brand_root" --output "$work_dir/unsafe-attributes.html" > /dev/null 2> "$temp_dir/attribute-error.txt"; then
+  fail 'event-handler attribute unexpectedly succeeded'
+fi
+assert_contains 'event-handler attributes are not permitted' "$temp_dir/attribute-error.txt"
+
+cat > "$work_dir/unsafe-link.md" <<'EOF'
+---
+title: "Unsafe link"
+---
+
+[Unsafe link](javascript:alert(1))
+EOF
+if "$root/bakedocs" slides "$work_dir/unsafe-link.md" test --brands-dir "$brand_root" --output "$work_dir/unsafe-link.html" > /dev/null 2> "$temp_dir/link-error.txt"; then
+  fail 'unsafe link scheme unexpectedly succeeded'
+fi
+assert_contains 'unsafe link scheme is not permitted' "$temp_dir/link-error.txt"
+
+cat > "$work_dir/unsafe-style.md" <<'EOF'
+---
+title: "Unsafe style"
+---
+
+[Remote style]{style="background-image: url(https://example.invalid/tracker.png)"}
+EOF
+if "$root/bakedocs" html "$work_dir/unsafe-style.md" test --brands-dir "$brand_root" --offline --output "$work_dir/unsafe-style.html" > /dev/null 2> "$temp_dir/style-error.txt"; then
+  fail 'resource-bearing source style unexpectedly succeeded'
+fi
+assert_contains 'source style attributes are not supported' "$temp_dir/style-error.txt"
+
+fake_chromium="$temp_dir/fake-chromium"
+cat > "$fake_chromium" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Fake Chromium 1.0\n'
+  exit 0
+fi
+
+output=""
+javascript_disabled=false
+for argument in "$@"; do
+  case "$argument" in
+    --disable-javascript) javascript_disabled=true ;;
+    --print-to-pdf=*) output="${argument#*=}" ;;
+  esac
+done
+
+[[ "$javascript_disabled" == true && -n "$output" ]] || exit 9
+printf '%%PDF-1.4\n%% synthetic test output\n' > "$output"
+EOF
+chmod +x "$fake_chromium"
+BAKEDOCS_CHROMIUM="$fake_chromium" "$root/bakedocs" check --brands-dir "$brand_root" > "$temp_dir/check.txt"
+assert_contains 'pandoc: available' "$temp_dir/check.txt"
+assert_contains 'chromium: available (Fake Chromium 1.0)' "$temp_dir/check.txt"
+assert_contains 'test: ready' "$temp_dir/check.txt"
+
+hanging_version="$temp_dir/hanging-version"
+cat > "$hanging_version" <<'EOF'
+#!/usr/bin/env bash
+sleep 10
+EOF
+chmod +x "$hanging_version"
+set +e
+BAKEDOCS_PANDOC="$hanging_version" BAKEDOCS_CHROMIUM="$fake_chromium" BAKEDOCS_RENDER_TIMEOUT=1 \
+  "$root/bakedocs" check --brands-dir "$brand_root" \
+  > /dev/null 2> "$temp_dir/version-timeout-error.txt"
+status=$?
+set -e
+assert_equal '124' "$status" 'version probe timeout exit status'
+assert_contains 'version exceeded the 1s render timeout' "$temp_dir/version-timeout-error.txt"
+
+pdf_output="$work_dir/rendered report.pdf"
+actual_output="$(BAKEDOCS_CHROMIUM="$fake_chromium" "$root/bakedocs" pdf \
+  "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" \
+  --output "$pdf_output")"
+assert_equal "$pdf_output" "$actual_output" 'PDF output path'
+[[ -s "$pdf_output" ]] || fail 'PDF output is missing or empty'
+
+set +e
+BAKEDOCS_PANDOC="$temp_dir/missing-pandoc" "$root/bakedocs" html \
+  "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" \
+  --output "$work_dir/missing-pandoc.html" \
+  > /dev/null 2> "$temp_dir/pandoc-error.txt"
+status=$?
+set -e
+assert_equal '127' "$status" 'missing Pandoc exit status'
+assert_contains 'pandoc is required' "$temp_dir/pandoc-error.txt"
+
+hanging_pandoc="$temp_dir/hanging-pandoc"
+cat > "$hanging_pandoc" <<'EOF'
+#!/usr/bin/env bash
+sleep 10
+EOF
+chmod +x "$hanging_pandoc"
+set +e
+BAKEDOCS_PANDOC="$hanging_pandoc" BAKEDOCS_RENDER_TIMEOUT=1 "$root/bakedocs" html \
+  "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" \
+  --output "$work_dir/timeout.html" \
+  > /dev/null 2> "$temp_dir/timeout-error.txt"
+status=$?
+set -e
+assert_equal '124' "$status" 'Pandoc timeout exit status'
+assert_contains 'pandoc exceeded the 1s render timeout' "$temp_dir/timeout-error.txt"
+
+set +e
+BAKEDOCS_CHROMIUM="$temp_dir/missing-chromium" "$root/bakedocs" pdf \
+  "$work_dir/report source.md" test \
+  --brands-dir "$brand_root" \
+  --output "$work_dir/should-not-exist.pdf" \
+  > /dev/null 2> "$temp_dir/chromium-error.txt"
+status=$?
+set -e
+assert_equal '127' "$status" 'missing Chromium exit status'
+assert_contains 'Chromium is required for PDF output' "$temp_dir/chromium-error.txt"
+
+printf 'Command-surface tests passed\n'

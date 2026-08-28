@@ -1,0 +1,59 @@
+<!-- SPDX-FileCopyrightText: 2026 Marcus Baw -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!doctype html>
+<html$if(lang)$ lang="$lang$"$endif$>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc $pandoc-version$">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>$pagetitle$</title>
+  <style>$styles.html()$</style>
+$for(css)$
+  <link rel="stylesheet" href="$css$">
+$endfor$
+</head>
+<body>
+<header id="title-block-header">
+$if(logo)$
+  <img class="brand-logo" src="$logo$" alt="$brand-name$ logo">
+$endif$
+  <h1 class="title">$title$</h1>
+$if(subtitle)$
+  <p class="subtitle">$subtitle$</p>
+$endif$
+  <dl class="document-metadata">
+$if(brand-name)$
+    <dt>Organisation</dt><dd>$brand-name$</dd>
+$endif$
+$if(reference)$
+    <dt>Reference</dt><dd>$reference$</dd>
+$endif$
+$if(status)$
+    <dt>Status</dt><dd>$status$</dd>
+$endif$
+$if(author)$
+    <dt>Author</dt><dd>$for(author)$$author$$sep$, $endfor$</dd>
+$endif$
+$if(date)$
+    <dt>Date</dt><dd>$date$</dd>
+$endif$
+  </dl>
+$if(abstract)$
+  <section class="abstract" aria-labelledby="abstract-title">
+    <div id="abstract-title" class="abstract-title">Summary</div>
+    $abstract$
+  </section>
+$endif$
+</header>
+$if(toc)$
+<nav id="TOC" role="doc-toc" aria-label="Table of contents">
+  <h1>Contents</h1>
+  $table-of-contents$
+</nav>
+$endif$
+<main>
+$body$
+</main>
+</body>
+</html>

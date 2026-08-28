@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Parse every maintained Markdown document and fixture through Pandoc.
+# Install Pandoc before running this check.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+command -v pandoc >/dev/null 2>&1 || {
+  printf 'pandoc is required; install it and rerun s/test\n' >&2
+  exit 127
+}
+
+shopt -s globstar nullglob
+markdown_files=(**/*.md)
+
+pandoc "${markdown_files[@]}" \
+  --from=markdown \
+  --to=native \
+  --output=/dev/null \
+  "$@"
+
+exec tests/command-surface

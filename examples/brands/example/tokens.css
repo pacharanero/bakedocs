@@ -1,0 +1,13 @@
+/* SPDX-FileCopyrightText: 2026 Marcus Baw */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+:root {
+  --brand-name: "Example Organisation";
+  --brand-primary: #26374a;
+  --brand-accent: #287f8f;
+  --brand-highlight: #d09b32;
+  --brand-surface: #f4f1e9;
+  --brand-ink: #20272d;
+  --brand-heading-font: Georgia, "Times New Roman", serif;
+  --brand-body-font: Arial, sans-serif;
+}

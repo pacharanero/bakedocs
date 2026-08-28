@@ -1,0 +1,10 @@
+<!-- SPDX-FileCopyrightText: 2026 Marcus Baw -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" role="img" aria-labelledby="title description">
+  <title id="title">Example Organisation</title>
+  <desc id="description">A geometric example logo with no connection to a real organisation.</desc>
+  <rect width="320" height="96" rx="12" fill="#f4f1e9"/>
+  <path d="M24 72 48 24l24 48Z" fill="#287f8f"/>
+  <circle cx="48" cy="52" r="9" fill="#d09b32"/>
+  <text x="92" y="59" fill="#26374a" font-family="Arial, sans-serif" font-size="27" font-weight="700">Example Organisation</text>
+</svg>

@@ -1,0 +1,60 @@
+<!-- SPDX-FileCopyrightText: 2026 Marcus Baw -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!doctype html>
+<html$if(lang)$ lang="$lang$"$endif$>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc $pandoc-version$">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="icon" href="data:,">
+  <title>$pagetitle$</title>
+  <link rel="stylesheet" href="$revealjs-url$/dist/reset.css">
+  <link rel="stylesheet" href="$revealjs-url$/dist/reveal.css">
+  <link rel="stylesheet" href="$revealjs-url$/dist/theme/white.css" id="theme">
+  <style>$styles.html()$</style>
+$for(header-includes)$
+  $header-includes$
+$endfor$
+$for(css)$
+  <link rel="stylesheet" href="$css$">
+$endfor$
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+$if(title)$
+      <section id="title-slide">
+        <h1 class="title">$title$</h1>
+$if(subtitle)$
+        <p class="subtitle">$subtitle$</p>
+$endif$
+$for(author)$
+        <p class="author">$author$</p>
+$endfor$
+$if(date)$
+        <p class="date">$date$</p>
+$endif$
+      </section>
+$endif$
+$body$
+    </div>
+  </div>
+  <script type="module">
+    import Reveal from "$revealjs-url$/dist/reveal.mjs";
+    import Notes from "$revealjs-url$/dist/plugin/notes.mjs";
+    import Search from "$revealjs-url$/dist/plugin/search.mjs";
+    import Zoom from "$revealjs-url$/dist/plugin/zoom.mjs";
+
+    Reveal.initialize({
+      controls: true,
+      hash: true,
+      height: 720,
+      keyboard: true,
+      plugins: [Notes, Search, Zoom],
+      progress: true,
+      transition: "none",
+      width: 1280
+    });
+  </script>
+</body>
+</html>

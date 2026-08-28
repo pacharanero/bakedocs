@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Check the syntax of every executable Bash script in the project.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+for script in bakedocs s/* tests/*; do
+  [[ -f "$script" && -x "$script" ]] || continue
+  bash -n "$script"
+done
+
+printf 'Shell syntax checks passed\n'

@@ -1,0 +1,14 @@
+# Generated render output
+/out/
+
+# Local-only private workspace
+/.private
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Disposable agent and browser-automation artefacts
+.claude/
+.playwright-mcp/
