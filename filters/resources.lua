@@ -6,6 +6,10 @@
 -- local presentation images are embedded, offline renders reject remote images,
 -- required metadata is normalised, and executable attributes or unsafe links fail.
 -- The bakedocs shell command supplies these environment variables for each render.
+if pandoc.mediabag.make_data_uri == nil then
+  error('bakedocs requires Pandoc 3.7.1 or later')
+end
+
 local embed_local_images = os.getenv('BAKEDOCS_EMBED_LOCAL_IMAGES') == '1'
 local offline = os.getenv('BAKEDOCS_OFFLINE') == '1'
 local brand_dir = os.getenv('BAKEDOCS_BRAND_DIR')

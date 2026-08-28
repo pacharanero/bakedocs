@@ -7,7 +7,7 @@ Turn Markdown into branded PDF, standalone HTML, and Reveal.js presentations.
 
 ## Quick Start
 
-Prerequisites: Bash 4.0 or later, Pandoc, and a Chromium-based browser. `bakedocs` auto-detects `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable`; set `BAKEDOCS_CHROMIUM=/path/to/browser` when the executable has another name or location.
+Prerequisites: Bash 4.0 or later, Pandoc 3.7.1 or later, and a Chromium-based browser. `bakedocs` auto-detects `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable`; set `BAKEDOCS_CHROMIUM=/path/to/browser` when the executable has another name or location.
 
 ```console
 git clone https://github.com/pacharanero/bakedocs.git
