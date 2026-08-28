@@ -3,3 +3,13 @@
 
 brand-name: "Example Organisation"
 logo: "assets/logo.svg"
+heading-font-family: "Atkinson Hyperlegible Next"
+heading-font-file: "assets/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2"
+heading-font-weight: "700"
+heading-font-style: "normal"
+heading-font-pdf-name: "AtkinsonHyperlegibleNext-Bold"
+body-font-family: "Atkinson Hyperlegible Next"
+body-font-file: "assets/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2"
+body-font-weight: "400"
+body-font-style: "normal"
+body-font-pdf-name: "AtkinsonHyperlegibleNext-Regular"

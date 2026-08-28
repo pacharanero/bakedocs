@@ -17,3 +17,10 @@ for tool in pandoc chromium weasyprint vivliostyle; do
     printf '%-14s unavailable\n' "$tool"
   fi
 done
+
+if command -v pdffonts > /dev/null 2>&1; then
+  version="$(pdffonts -v 2>&1 | while IFS= read -r line; do printf '%s' "$line"; break; done)"
+  printf '%-14s available  %s\n' pdffonts "$version"
+else
+  printf '%-14s unavailable  required only for configured PDF font contracts\n' pdffonts
+fi

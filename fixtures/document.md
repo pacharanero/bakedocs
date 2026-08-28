@@ -25,7 +25,7 @@ The service is stable, the planned maintenance was completed, and the next revie
 | Onboarding | Community | Proposed | Draft welcome sequence | 12 September |
 | Data retention | Governance | Complete | Retention schedule | Annual |
 
-The important comparison is not visual novelty. It is whether hierarchy, tables, links, warnings, page breaks, and source provenance survive each renderer predictably.
+The important comparison is not visual novelty. It is whether hierarchy, tables, links, warnings, page breaks, and source provenance survive each renderer predictably. Supporting evidence is published at <https://example.test/evidence>.
 
 # Findings
 

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-conformance.XXXXXXXX")"
+trap 'rm -rf "$temp_dir"' EXIT
+
+fail() {
+  printf 'rendering conformance failed: %s\n' "$1" >&2
+  exit 1
+}
+
+assert_contains() {
+  local needle="$1"
+  local file="$2"
+  grep -Fq -- "$needle" "$file" || fail "$file does not contain: $needle"
+}
+
+for executable in pandoc pdfinfo pdffonts pdftotext; do
+  command -v "$executable" > /dev/null 2>&1 || fail "$executable is required"
+done
+
+document_html="$temp_dir/document.html"
+slides_html="$temp_dir/slides.html"
+document_pdf="$temp_dir/document.pdf"
+
+"$root/bakedocs" html "$root/fixtures/document.md" example \
+  --brands-dir "$root/examples/brands" --offline --output "$document_html" > /dev/null
+"$root/bakedocs" slides "$root/fixtures/slides.md" example \
+  --brands-dir "$root/examples/brands" --output "$slides_html" > /dev/null
+"$root/bakedocs" pdf "$root/fixtures/document.md" example \
+  --brands-dir "$root/examples/brands" --offline --output "$document_pdf" > /dev/null 2> "$temp_dir/pdf-render-diagnostics.txt"
+
+assert_contains '<!doctype html>' "$document_html"
+assert_contains '<html lang="en-GB">' "$document_html"
+assert_contains '<meta name="viewport" content="width=device-width, initial-scale=1">' "$document_html"
+assert_contains '<header id="title-block-header">' "$document_html"
+assert_contains 'class="brand-logo" src="data:image/svg+xml;base64,' "$document_html"
+assert_contains '<nav id="TOC" role="doc-toc" aria-label="Table of contents">' "$document_html"
+assert_contains '<main>' "$document_html"
+assert_contains '<h1 id="executive-summary">Executive summary</h1>' "$document_html"
+assert_contains '<h2 id="review-status">Review status</h2>' "$document_html"
+assert_contains '<blockquote>' "$document_html"
+assert_contains '<thead>' "$document_html"
+assert_contains 'class="footnotes footnotes-end-of-document" role="doc-endnotes"' "$document_html"
+assert_contains 'href="https://example.test/evidence"' "$document_html"
+assert_contains '--brand-primary: #26374a' "$document_html"
+assert_contains 'data:font/woff2;base64,' "$document_html"
+assert_contains '--brand-heading-font: "Atkinson Hyperlegible Next"' "$document_html"
+assert_contains 'code span.kw {' "$document_html"
+assert_contains 'PDF contains additional fonts that may indicate glyph fallback' "$temp_dir/pdf-render-diagnostics.txt"
+if grep -Fq "$root" "$document_html"; then
+  fail 'standalone document HTML contains a checkout-specific path'
+fi
+
+assert_contains '<div class="reveal">' "$slides_html"
+assert_contains '<div class="slides">' "$slides_html"
+assert_contains '<section id="title-slide">' "$slides_html"
+assert_contains '<section id="the-job" class="title-slide slide level1">' "$slides_html"
+assert_contains '<section id="one-content-model" class="title-slide slide level1">' "$slides_html"
+assert_contains '<section id="inputs" class="slide level2">' "$slides_html"
+assert_contains '<section id="optional-depth" class="slide level2">' "$slides_html"
+assert_contains 'https://cdn.jsdelivr.net/npm/reveal.js@6.0.1/dist/reveal.mjs' "$slides_html"
+assert_contains 'height: 720' "$slides_html"
+assert_contains 'width: 1280' "$slides_html"
+if [[ "$(grep -Fc 'class="title-slide slide level1"' "$slides_html")" -ne 4 ]]; then
+  fail 'Reveal output does not contain four horizontal content slides'
+fi
+if [[ "$(grep -Fc 'class="slide level2"' "$slides_html")" -ne 2 ]]; then
+  fail 'Reveal output does not contain two vertical content slides'
+fi
+
+pdf_info="$temp_dir/pdf-info.txt"
+pdf_structure="$temp_dir/pdf-structure.txt"
+pdf_urls="$temp_dir/pdf-urls.txt"
+pdf_fonts="$temp_dir/pdf-fonts.txt"
+pdf_text="$temp_dir/pdf-text.txt"
+pdfinfo "$document_pdf" > "$pdf_info"
+pdfinfo -struct "$document_pdf" > "$pdf_structure" 2> "$temp_dir/pdf-structure-errors.txt"
+pdfinfo -url "$document_pdf" > "$pdf_urls"
+pdffonts "$document_pdf" > "$pdf_fonts"
+pdftotext "$document_pdf" "$pdf_text"
+
+assert_contains 'Title:           Managed Community Service Review' "$pdf_info"
+assert_contains 'Tagged:          yes' "$pdf_info"
+assert_contains 'JavaScript:      no' "$pdf_info"
+assert_contains 'Pages:           5' "$pdf_info"
+assert_contains 'Encrypted:       no' "$pdf_info"
+assert_contains '(A4)' "$pdf_info"
+assert_contains 'Document' "$pdf_structure"
+assert_contains 'H1 (block)' "$pdf_structure"
+assert_contains 'Table (block)' "$pdf_structure"
+assert_contains 'TH ' "$pdf_structure"
+assert_contains 'https://example.test/evidence' "$pdf_urls"
+assert_contains 'AtkinsonHyperlegibleNext-Bold' "$pdf_fonts"
+assert_contains 'AtkinsonHyperlegibleNext-Regular' "$pdf_fonts"
+assert_contains 'Managed Community Service' "$pdf_text"
+assert_contains 'Recommendation' "$pdf_text"
+assert_contains 'The fixture is synthetic' "$pdf_text"
+
+font_count=0
+while IFS= read -r line; do
+  read -r -a fields <<< "$line"
+  field_count="${#fields[@]}"
+  name="${fields[0]}"
+  embedded="${fields[field_count - 5]}"
+  unicode="${fields[field_count - 3]}"
+  [[ "$embedded" == yes ]] || fail "PDF font is not embedded: $name"
+  [[ "$unicode" == yes ]] || fail "PDF font lacks a Unicode map: $name"
+  font_count=$((font_count + 1))
+done < <(sed '1,2d' "$pdf_fonts")
+((font_count > 0)) || fail 'PDF contains no fonts'
+
+fallback_root="$temp_dir/fallback-brands"
+mkdir -p "$fallback_root"
+cp -R "$root/examples/brands/example" "$fallback_root/fallback"
+while IFS= read -r line || [[ -n "$line" ]]; do
+  printf '%s\n' "${line/AtkinsonHyperlegibleNext-Bold/ExpectedHeadingFont}"
+done < "$fallback_root/fallback/brand.yml" > "$temp_dir/fallback-brand.yml"
+mv "$temp_dir/fallback-brand.yml" "$fallback_root/fallback/brand.yml"
+fallback_pdf="$temp_dir/fallback.pdf"
+printf 'preserve\n' > "$fallback_pdf"
+if "$root/bakedocs" pdf "$root/fixtures/document.md" fallback \
+  --brands-dir "$fallback_root" --offline --output "$fallback_pdf" > /dev/null 2> "$temp_dir/fallback-error.txt"; then
+  fail 'PDF font fallback unexpectedly passed its contract'
+fi
+assert_contains 'brand heading font was not embedded in the PDF; expected ExpectedHeadingFont' "$temp_dir/fallback-error.txt"
+[[ "$(< "$fallback_pdf")" == preserve ]] || fail 'font-contract failure replaced an existing output'
+
+outside_font="$temp_dir/outside-font.woff2"
+cp "$root/examples/brands/example/assets/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2" "$outside_font"
+rm "$fallback_root/fallback/assets/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2"
+ln -s "$outside_font" "$fallback_root/fallback/assets/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2"
+if "$root/bakedocs" html "$root/fixtures/document.md" fallback \
+  --brands-dir "$fallback_root" --offline --output "$temp_dir/escaped-font.html" > /dev/null 2> "$temp_dir/escaped-font-error.txt"; then
+  fail 'brand font symlink unexpectedly escaped its profile'
+fi
+assert_contains 'brand heading font escapes the brand profile' "$temp_dir/escaped-font-error.txt"
+
+logo_escape_root="$temp_dir/logo-escape-brands"
+mkdir -p "$logo_escape_root"
+cp -R "$root/examples/brands/example" "$logo_escape_root/logo-escape"
+rm "$logo_escape_root/logo-escape/assets/logo.svg"
+ln -s /etc/passwd "$logo_escape_root/logo-escape/assets/logo.svg"
+if "$root/bakedocs" html "$root/fixtures/document.md" logo-escape \
+  --brands-dir "$logo_escape_root" --offline --output "$temp_dir/escaped-logo.html" > /dev/null 2> "$temp_dir/escaped-logo-error.txt"; then
+  fail 'brand logo symlink unexpectedly escaped its profile'
+fi
+assert_contains 'brand logo escapes the brand profile' "$temp_dir/escaped-logo-error.txt"
+
+printf 'Rendering conformance tests passed\n'

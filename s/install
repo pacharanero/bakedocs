@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Install this checkout into a user prefix. Each update creates a complete,
+# immutable payload before atomically switching the command symlink.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+invocation_dir="$(pwd -P)"
+prefix=""
+stage_dir=""
+temporary_link=""
+readonly marker_value="bakedocs-user-install-v1"
+
+usage() {
+  cat <<'EOF'
+Usage: s/install [--prefix <PATH>]
+
+Install bakedocs under $HOME/.local by default. Rerun to update an existing
+managed installation. This script does not install Pandoc or Chromium.
+EOF
+}
+
+fail() {
+  printf 'bakedocs installer: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+expand_path() {
+  case "$1" in
+    '~')
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+      printf '%s\n' "$HOME"
+      ;;
+    '~/'*)
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+      printf '%s/%s\n' "$HOME" "${1#\~/}"
+      ;;
+    \~*) fail "~user paths are not supported: $1" 2 ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+reject_symlink_components() {
+  local path="$1"
+  local current=""
+  local part
+  local -a parts
+
+  [[ "$path" == /* && "$path" != / ]] || fail "prefix must be an absolute path below /: $path" 2
+  [[ ! "$path" =~ [[:cntrl:]] ]] || fail 'prefix must not contain control characters' 2
+  IFS='/' read -r -a parts <<< "${path#/}"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) continue ;;
+      ..) fail "prefix must not contain '..': $path" 2 ;;
+    esac
+    current="$current/$part"
+    [[ ! -L "$current" ]] || fail "refusing symlinked installation path: $current"
+  done
+}
+
+is_managed_target() {
+  [[ "$1" =~ ^\.\./lib/bakedocs/releases/[a-zA-Z0-9._-]+/bakedocs$ ]]
+}
+
+cleanup() {
+  [[ -z "$temporary_link" || ! -L "$temporary_link" ]] || rm "$temporary_link"
+  [[ -z "$stage_dir" || ! -d "$stage_dir" ]] || rm -rf "$stage_dir"
+}
+
+while (($#)); do
+  case "$1" in
+    --prefix)
+      (($# >= 2)) || fail '--prefix requires a path' 2
+      prefix="$2"
+      [[ -n "$prefix" ]] || fail '--prefix requires a non-empty path' 2
+      shift 2
+      ;;
+    --prefix=*)
+      prefix="${1#*=}"
+      [[ -n "$prefix" ]] || fail '--prefix requires a non-empty path' 2
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) fail "unknown option: $1" 2 ;;
+  esac
+done
+
+if [[ -z "$prefix" ]]; then
+  [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+  prefix="$HOME/.local"
+else
+  prefix="$(expand_path "$prefix")"
+  [[ "$prefix" == /* ]] || prefix="$invocation_dir/$prefix"
+fi
+
+required_files=(
+  bakedocs
+  filters/metadata-interpolation.lua
+  filters/resources.lua
+  styles/document.css
+  styles/reveal.css
+  templates/document.html
+  templates/reveal.html
+)
+
+for required_file in "${required_files[@]}"; do
+  [[ -f "$root/$required_file" && -r "$root/$required_file" ]] || fail "source payload is missing: $required_file"
+done
+[[ -x "$root/bakedocs" ]] || fail 'source executable is not executable: bakedocs'
+
+app_root="$prefix/lib/bakedocs"
+releases_dir="$app_root/releases"
+marker="$app_root/.managed-by-bakedocs"
+bin_dir="$prefix/bin"
+entry="$bin_dir/bakedocs"
+reject_symlink_components "$app_root"
+reject_symlink_components "$bin_dir"
+
+if [[ -e "$app_root" || -L "$app_root" ]]; then
+  [[ -d "$app_root" && ! -L "$app_root" && -f "$marker" && ! -L "$marker" ]] || fail "refusing unmanaged application path: $app_root"
+  [[ "$(< "$marker")" == "$marker_value" ]] || fail "ownership marker does not match: $marker"
+fi
+reject_symlink_components "$releases_dir"
+
+if [[ -e "$entry" || -L "$entry" ]]; then
+  [[ -L "$entry" ]] || fail "refusing to replace unrelated command: $entry"
+  existing_target="$(readlink "$entry")"
+  is_managed_target "$existing_target" || fail "refusing to replace unrelated symlink: $entry"
+  [[ -f "$entry" && -x "$entry" ]] || fail "managed command target is missing or invalid: $entry"
+fi
+
+version="$("$root/bakedocs" version)"
+version="${version#bakedocs }"
+version="${version//[^a-zA-Z0-9._-]/-}"
+release_id="${version}-$(date -u +%Y%m%d%H%M%S)-$$"
+release_dir="$releases_dir/$release_id"
+stage_dir="$releases_dir/.staging-$release_id"
+temporary_link="$bin_dir/.bakedocs-$release_id"
+trap cleanup EXIT
+
+mkdir -p "$releases_dir" "$bin_dir"
+if [[ ! -e "$marker" ]]; then
+  printf '%s\n' "$marker_value" > "$marker"
+  chmod 0644 "$marker"
+fi
+
+mkdir -p "$stage_dir/filters" "$stage_dir/styles" "$stage_dir/templates"
+install -m 0755 "$root/bakedocs" "$stage_dir/bakedocs"
+install -m 0644 "$root/filters/metadata-interpolation.lua" "$stage_dir/filters/metadata-interpolation.lua"
+install -m 0644 "$root/filters/resources.lua" "$stage_dir/filters/resources.lua"
+install -m 0644 "$root/styles/document.css" "$stage_dir/styles/document.css"
+install -m 0644 "$root/styles/reveal.css" "$stage_dir/styles/reveal.css"
+install -m 0644 "$root/templates/document.html" "$stage_dir/templates/document.html"
+install -m 0644 "$root/templates/reveal.html" "$stage_dir/templates/reveal.html"
+
+for required_file in "${required_files[@]}"; do
+  [[ -s "$stage_dir/$required_file" ]] || fail "staged payload is incomplete: $required_file"
+done
+
+mv "$stage_dir" "$release_dir"
+stage_dir=""
+ln -s "../lib/bakedocs/releases/$release_id/bakedocs" "$temporary_link"
+mv -f "$temporary_link" "$entry"
+temporary_link=""
+
+printf 'Installed bakedocs to %s\n' "$entry"
+case ":${PATH:-}:" in
+  *":$bin_dir:"*) ;;
+  *) printf 'Add %s to PATH to invoke bakedocs directly.\n' "$bin_dir" >&2 ;;
+esac

@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-install-test.XXXXXXXX")"
+temp_dir="$(cd "$temp_dir" && pwd -P)"
+trap 'rm -rf "$temp_dir"' EXIT
+
+fail() {
+  printf 'installation test failed: %s\n' "$1" >&2
+  exit 1
+}
+
+unset BAKEDOCS_BRANDS_DIR BAKEDOCS_CHROMIUM BAKEDOCS_PANDOC BAKEDOCS_RENDER_TIMEOUT XDG_CONFIG_HOME
+export HOME="$temp_dir/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export TMPDIR="$temp_dir/tmp"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
+
+if env -u HOME "$root/s/install" > /dev/null 2> "$temp_dir/no-home-error.txt"; then
+  fail 'installer unexpectedly accepted a missing HOME'
+fi
+grep -Fq 'HOME is not set' "$temp_dir/no-home-error.txt" || fail 'missing HOME error was not reported'
+
+"$root/s/install" > "$temp_dir/install-output.txt"
+entry="$HOME/.local/bin/bakedocs"
+[[ -L "$entry" ]] || fail 'default command symlink was not created'
+target="$(readlink "$entry")"
+[[ "$target" == ../lib/bakedocs/releases/*/bakedocs ]] || fail "unexpected command target: $target"
+release="$(cd "$(dirname "$entry")" && cd "$(dirname "$target")" && pwd)/bakedocs"
+[[ -x "$release" ]] || fail 'installed executable is missing'
+
+for payload in filters/metadata-interpolation.lua filters/resources.lua styles/document.css styles/reveal.css templates/document.html templates/reveal.html; do
+  [[ -s "${release%/bakedocs}/$payload" ]] || fail "installed payload is missing: $payload"
+done
+[[ ! -e "${release%/bakedocs}/examples" ]] || fail 'example profiles were installed with the runtime payload'
+
+work_dir="$temp_dir/work space"
+mkdir -p "$work_dir/bin"
+output="$work_dir/installed.html"
+cat > "$work_dir/installed-source.md" <<'EOF'
+---
+title: "Installed {{ subject }}"
+---
+
+Rendered {{ subject }}.
+EOF
+printf 'subject: "interpolation"\n' > "$work_dir/installed-values.yml"
+(cd "$work_dir" && "$entry" html "$work_dir/installed-source.md" example \
+  --values "$work_dir/installed-values.yml" \
+  --brands-dir "$root/examples/brands" --offline --output "$output" > /dev/null)
+[[ -s "$output" ]] || fail 'installed command did not render from another directory'
+grep -Fq 'Rendered interpolation.' "$output" || fail 'installed metadata interpolation did not run'
+
+ln -s "../../home/.local/bin/bakedocs" "$work_dir/bin/first"
+ln -s first "$work_dir/bin/second"
+expected_version="$("$root/bakedocs" version)"
+[[ "$(cd "$work_dir" && "$work_dir/bin/second" version)" == "$expected_version" ]] || fail 'relative chained symlink invocation failed'
+
+first_target="$(readlink "$entry")"
+"$root/s/install" > /dev/null
+second_target="$(readlink "$entry")"
+[[ "$first_target" != "$second_target" ]] || fail 'reinstall did not switch to a new release'
+first_release="$HOME/.local/bin/${first_target%/bakedocs}/bakedocs"
+[[ -x "$first_release" ]] || fail 'reinstall removed the previous immutable release'
+
+real_install="$(command -v install)"
+fake_bin="$temp_dir/failing-bin"
+mkdir -p "$fake_bin"
+cat > "$fake_bin/install" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$temp_dir/install-count" ]] || count="\$(< "$temp_dir/install-count")"
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$temp_dir/install-count"
+((count < 3)) || exit 73
+exec "$real_install" "\$@"
+EOF
+chmod +x "$fake_bin/install"
+if PATH="$fake_bin:$PATH" "$root/s/install" > /dev/null 2> "$temp_dir/staging-error.txt"; then
+  fail 'staging failure unexpectedly succeeded'
+fi
+[[ "$(readlink "$entry")" == "$second_target" ]] || fail 'failed update changed the active release'
+if compgen -G "$HOME/.local/lib/bakedocs/releases/.staging-*" > /dev/null; then
+  fail 'failed update left a staging directory behind'
+fi
+
+custom_prefix="$temp_dir/custom prefix"
+"$root/s/install" --prefix "$custom_prefix" > /dev/null
+[[ -L "$custom_prefix/bin/bakedocs" ]] || fail 'custom-prefix install failed'
+printf 'preserve\n' > "$custom_prefix/bin/unrelated"
+"$root/s/uninstall" --prefix "$custom_prefix" > /dev/null
+[[ ! -e "$custom_prefix/bin/bakedocs" && ! -L "$custom_prefix/bin/bakedocs" ]] || fail 'custom-prefix uninstall left the command behind'
+[[ -f "$custom_prefix/bin/unrelated" ]] || fail 'uninstall removed an unrelated file'
+"$root/s/uninstall" --prefix "$custom_prefix" > /dev/null
+
+collision="$temp_dir/collision"
+mkdir -p "$collision/bin"
+printf 'unrelated\n' > "$collision/bin/bakedocs"
+if "$root/s/install" --prefix "$collision" > /dev/null 2> "$temp_dir/collision-error.txt"; then
+  fail 'installer overwrote an unrelated command'
+fi
+grep -Fq 'unrelated' "$collision/bin/bakedocs" || fail 'unrelated command contents changed'
+
+empty_prefix_install="$temp_dir/empty-prefix-install"
+if HOME="$empty_prefix_install" "$root/s/install" --prefix '' > /dev/null 2> "$temp_dir/empty-prefix-error.txt"; then
+  fail 'installer unexpectedly accepted an empty prefix'
+fi
+[[ ! -e "$empty_prefix_install/.local" ]] || fail 'empty installer prefix touched the default prefix'
+
+symlink_prefix="$temp_dir/symlink-prefix"
+mkdir -p "$temp_dir/real-prefix"
+ln -s "$temp_dir/real-prefix" "$symlink_prefix"
+if "$root/s/install" --prefix "$symlink_prefix" > /dev/null 2> "$temp_dir/symlink-prefix-error.txt"; then
+  fail 'installer unexpectedly accepted a symlinked prefix'
+fi
+[[ ! -e "$temp_dir/real-prefix/lib/bakedocs" ]] || fail 'symlinked prefix modified its target'
+
+newline_target="$temp_dir/newline-target"
+mkdir -p "$newline_target"
+newline_prefix="$temp_dir/"$'newline\ncomponent'
+ln -s "$newline_target" "$newline_prefix"
+if "$root/s/install" --prefix "$newline_prefix" > /dev/null 2> "$temp_dir/newline-install-error.txt"; then
+  fail 'installer unexpectedly accepted a newline-containing prefix'
+fi
+[[ ! -e "$newline_target/lib/bakedocs" ]] || fail 'newline-containing install prefix modified its symlink target'
+
+release_symlink_prefix="$temp_dir/release-symlink-prefix"
+"$root/s/install" --prefix "$release_symlink_prefix" > /dev/null
+external_releases="$temp_dir/external-releases"
+mv "$release_symlink_prefix/lib/bakedocs/releases" "$external_releases"
+ln -s "$external_releases" "$release_symlink_prefix/lib/bakedocs/releases"
+release_entries_before=("$external_releases"/*)
+if "$root/s/install" --prefix "$release_symlink_prefix" > /dev/null 2> "$temp_dir/release-symlink-error.txt"; then
+  fail 'installer unexpectedly followed a symlinked releases directory'
+fi
+release_entries_after=("$external_releases"/*)
+[[ "${#release_entries_after[@]}" -eq "${#release_entries_before[@]}" ]] || fail 'symlinked releases directory received a new payload'
+
+if "$root/s/uninstall" --prefix '' > /dev/null 2> "$temp_dir/empty-uninstall-error.txt"; then
+  fail 'uninstaller unexpectedly accepted an empty prefix'
+fi
+[[ -L "$entry" ]] || fail 'empty uninstall prefix removed the default installation'
+
+victim="$temp_dir/victim"
+"$root/s/install" --prefix "$victim" > /dev/null
+attack="$temp_dir/attack"
+mkdir -p "$attack"
+ln -s "$victim/bin" "$attack/bin"
+ln -s "$victim/lib" "$attack/lib"
+if "$root/s/uninstall" --prefix "$attack" > /dev/null 2> "$temp_dir/attack-error.txt"; then
+  fail 'uninstaller followed symlinked prefix components'
+fi
+[[ -L "$victim/bin/bakedocs" && -d "$victim/lib/bakedocs" ]] || fail 'symlinked-prefix uninstall modified its target'
+
+newline_attack="$temp_dir/"$'newline\nuninstall'
+ln -s "$victim" "$newline_attack"
+if "$root/s/uninstall" --prefix "$newline_attack" > /dev/null 2> "$temp_dir/newline-uninstall-error.txt"; then
+  fail 'uninstaller unexpectedly accepted a newline-containing prefix'
+fi
+[[ -L "$victim/bin/bakedocs" && -d "$victim/lib/bakedocs" ]] || fail 'newline-containing uninstall prefix modified its symlink target'
+
+marker_prefix="$temp_dir/marker-prefix"
+"$root/s/install" --prefix "$marker_prefix" > /dev/null
+marker="$marker_prefix/lib/bakedocs/.managed-by-bakedocs"
+mv "$marker" "$temp_dir/real-marker"
+ln -s "$temp_dir/real-marker" "$marker"
+if "$root/s/uninstall" --prefix "$marker_prefix" > /dev/null 2> "$temp_dir/marker-error.txt"; then
+  fail 'uninstaller accepted a symlinked ownership marker'
+fi
+[[ -d "$marker_prefix/lib/bakedocs" ]] || fail 'marker-symlink uninstall removed the application directory'
+
+orphan="$temp_dir/orphan"
+mkdir -p "$orphan/bin"
+ln -s '../lib/bakedocs/releases/orphan/bakedocs' "$orphan/bin/bakedocs"
+if "$root/s/uninstall" --prefix "$orphan" > /dev/null 2> "$temp_dir/orphan-error.txt"; then
+  fail 'uninstaller accepted an orphan command symlink'
+fi
+[[ -L "$orphan/bin/bakedocs" ]] || fail 'uninstaller removed an orphan command symlink'
+
+directory_target="$temp_dir/directory-target"
+"$root/s/install" --prefix "$directory_target" > /dev/null
+directory_entry="$directory_target/bin/bakedocs"
+directory_link="$(readlink "$directory_entry")"
+directory_executable="$(cd "$directory_target/bin" && cd "$(dirname "$directory_link")" && pwd)/bakedocs"
+rm "$directory_executable"
+mkdir "$directory_executable"
+if "$root/s/install" --prefix "$directory_target" > /dev/null 2> "$temp_dir/directory-target-error.txt"; then
+  fail 'installer accepted a managed target that became a directory'
+fi
+[[ "$(readlink "$directory_entry")" == "$directory_link" ]] || fail 'invalid target changed the command symlink'
+
+"$root/s/uninstall" > /dev/null
+[[ ! -e "$entry" && ! -L "$entry" ]] || fail 'default uninstall left the command behind'
+[[ ! -e "$HOME/.local/lib/bakedocs" ]] || fail 'default uninstall left the payload behind'
+
+printf 'Installation tests passed\n'

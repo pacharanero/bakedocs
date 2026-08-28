@@ -19,8 +19,12 @@ brands_dir_option=""
 brands_dir_option_set=false
 output_option=""
 output_option_set=false
+values_options=()
+values_files=()
 offline=false
 temp_dir=""
+font_style=""
+brand_logo=""
 render_timeout="${BAKEDOCS_RENDER_TIMEOUT:-120}"
 
 fail() {
@@ -33,9 +37,9 @@ fail() {
 usage() {
   cat <<'EOF'
 Usage:
-  bakedocs pdf <SOURCE> <BRAND-ID> [--output <PATH>]
-  bakedocs html <SOURCE> <BRAND-ID> [--output <PATH>]
-  bakedocs slides <SOURCE> <BRAND-ID> [--output <PATH>]
+  bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+  bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+  bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
   bakedocs brands list [--brands-dir <PATH>]
   bakedocs brands show <BRAND-ID> [--brands-dir <PATH>]
   bakedocs check [--brands-dir <PATH>]
@@ -43,6 +47,7 @@ Usage:
 
 Options:
       --brands-dir <PATH>  Use only this brand-profile root
+      --values <PATH>      Add an ordered YAML or JSON metadata layer
       --output <PATH>      Write the rendered artefact to PATH
       --offline            Reject output that requires remote resources
   -h, --help               Print help
@@ -85,6 +90,62 @@ absolute_path() {
   else
     printf '%s/%s\n' "$invocation_dir" "$path"
   fi
+}
+
+resolve_existing_file() {
+  local path="$1"
+  local directory
+  local target
+  local depth=0
+
+  while [[ -L "$path" ]]; do
+    ((depth < 40)) || return 1
+    directory="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+    target="$(readlink "$path")" || return 1
+    if [[ "$target" == /* ]]; then
+      path="$target"
+    else
+      path="$directory/$target"
+    fi
+    depth=$((depth + 1))
+  done
+  [[ -f "$path" ]] || return 1
+  directory="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+  printf '%s/%s\n' "$directory" "${path##*/}"
+}
+
+profile_file() {
+  local brand_dir="$1"
+  local configured="$2"
+  local label="$3"
+  local brand_root
+  local resolved
+
+  [[ ! "$configured" =~ [[:cntrl:]] ]] || fail "$label path contains control characters" 2
+  [[ "$configured" != /* && "$configured" != '~' && "$configured" != '~/'* ]] || fail "$label path must be relative to the brand profile" 2
+  brand_root="$(cd -P "$brand_dir" && pwd)"
+  resolved="$(resolve_existing_file "$brand_root/$configured")" || fail "$label is not a readable regular file: $configured" 2
+  [[ "$resolved" == "$brand_root/"* ]] || fail "$label escapes the brand profile: $configured" 2
+  [[ -r "$resolved" ]] || fail "$label is not readable: $configured" 2
+  printf '%s\n' "$resolved"
+}
+
+resolve_brand_logo() {
+  local brand_dir="$1"
+  local configured
+  local resolved
+  local size
+
+  configured="$(yaml_scalar logo "$brand_dir/brand.yml")"
+  [[ -n "$configured" ]] || return 0
+  if [[ "$configured" == http://* || "$configured" == https://* || "$configured" == //* || "$configured" == data:* ]]; then
+    printf '%s\n' "$configured"
+    return
+  fi
+  resolved="$(profile_file "$brand_dir" "$configured" 'brand logo')" || return
+  size="$(wc -c < "$resolved")"
+  ((size <= 10 * 1024 * 1024)) || fail 'brand logo exceeds the 10 MiB limit' 2
+  printf '%s\n' "$resolved"
 }
 
 validate_brand_id() {
@@ -192,13 +253,15 @@ yaml_scalar() {
   local value
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line#"${line%%[![:space:]]*}"}"
     [[ "$line" == "$key:"* ]] || continue
     value="${line#*:}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     if [[ "$value" == \"*\" || "$value" == \'*\' ]]; then
       value="${value:1:${#value}-2}"
+    else
+      value="${value%%[[:space:]]#*}"
+      value="${value%"${value##*[![:space:]]}"}"
     fi
     printf '%s\n' "$value"
     return
@@ -214,6 +277,125 @@ brand_style() {
     printf '%s\n' "$override"
   else
     printf '%s/styles/%s.css\n' "$script_dir" "$kind"
+  fi
+}
+
+write_brand_font_css() {
+  local brand_dir="$1"
+  local target="$2"
+  local role
+  local family
+  local file
+  local weight
+  local style
+  local pdf_name
+  local font_path
+  local extension
+  local mime_type
+  local format
+  local size
+
+  : > "$target"
+  for role in heading body; do
+    family="$(yaml_scalar "$role-font-family" "$brand_dir/brand.yml")"
+    file="$(yaml_scalar "$role-font-file" "$brand_dir/brand.yml")"
+    weight="$(yaml_scalar "$role-font-weight" "$brand_dir/brand.yml")"
+    style="$(yaml_scalar "$role-font-style" "$brand_dir/brand.yml")"
+    pdf_name="$(yaml_scalar "$role-font-pdf-name" "$brand_dir/brand.yml")"
+    if [[ -z "$family$file$weight$style$pdf_name" ]]; then
+      continue
+    fi
+    [[ -n "$family" && -n "$file" && -n "$weight" && -n "$style" && -n "$pdf_name" ]] || \
+      fail "brand $role font contract requires family, file, weight, style, and PDF name" 2
+    command -v base64 > /dev/null 2>&1 || fail 'base64 is required to embed configured brand fonts' 127
+    command -v tr > /dev/null 2>&1 || fail 'tr is required to embed configured brand fonts' 127
+    [[ "$family" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]] || fail "brand $role font family contains unsupported characters" 2
+    [[ "$weight" =~ ^([1-9]00|normal|bold)$ ]] || fail "brand $role font weight is invalid: $weight" 2
+    [[ "$style" =~ ^(normal|italic|oblique)$ ]] || fail "brand $role font style is invalid: $style" 2
+    [[ "$pdf_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "brand $role PDF font name is invalid" 2
+
+    font_path="$(profile_file "$brand_dir" "$file" "brand $role font")" || return
+    size="$(wc -c < "$font_path")"
+    ((size <= 10 * 1024 * 1024)) || fail "brand $role font exceeds the 10 MiB limit" 2
+    extension="${font_path##*.}"
+    extension="${extension,,}"
+    case "$extension" in
+      woff2) mime_type='font/woff2'; format='woff2' ;;
+      woff) mime_type='font/woff'; format='woff' ;;
+      ttf) mime_type='font/ttf'; format='truetype' ;;
+      otf) mime_type='font/otf'; format='opentype' ;;
+      *) fail "brand $role font uses an unsupported file type: .$extension" 2 ;;
+    esac
+
+    printf '@font-face { font-family: "%s"; font-style: %s; font-weight: %s; font-display: block; src: url("data:%s;base64,' \
+      "$family" "$style" "$weight" "$mime_type" >> "$target"
+    base64 < "$font_path" | tr -d '\n' >> "$target"
+    printf '") format("%s"); }\n:root { --brand-%s-font: "%s"; }\n' "$format" "$role" "$family" >> "$target"
+  done
+}
+
+verify_pdf_font_contract() {
+  local pdf="$1"
+  local brand_dir="$2"
+  local role
+  local expected
+  local fonts_file
+  local name
+  local found
+  local line
+  local -a fields
+  local field_count
+  local embedded
+  local unicode
+  local -a expected_names=()
+  local -a additional_names=()
+  local expected_name
+  local additional
+
+  [[ -s "$font_style" ]] || return 0
+  command -v pdffonts > /dev/null 2>&1 || fail 'pdffonts is required to verify configured brand fonts' 127
+  fonts_file="$temp_dir/pdf-fonts.txt"
+  run_bounded pdf-fonts pdffonts "$pdf" > "$fonts_file"
+  for role in heading body; do
+    expected="$(yaml_scalar "$role-font-pdf-name" "$brand_dir/brand.yml")"
+    [[ -n "$expected" ]] || continue
+    expected_names+=("$expected")
+    found=false
+    while IFS= read -r line; do
+      read -r -a fields <<< "$line"
+      field_count="${#fields[@]}"
+      ((field_count >= 6)) || continue
+      name="${fields[0]}"
+      embedded="${fields[field_count - 5]}"
+      unicode="${fields[field_count - 3]}"
+      [[ "$name" =~ ^[A-Z]{6}\+(.+)$ ]] && name="${BASH_REMATCH[1]}"
+      if [[ "$name" == "$expected" && "$embedded" == yes && "$unicode" == yes ]]; then
+        found=true
+        break
+      fi
+    done < <(sed '1,2d' "$fonts_file")
+    [[ "$found" == true ]] || fail "brand $role font was not embedded in the PDF; expected $expected" 2
+  done
+
+  while IFS= read -r line; do
+    read -r -a fields <<< "$line"
+    ((${#fields[@]} >= 6)) || continue
+    name="${fields[0]}"
+    [[ "$name" =~ ^[A-Z]{6}\+(.+)$ ]] && name="${BASH_REMATCH[1]}"
+    additional=true
+    for expected_name in "${expected_names[@]}"; do
+      [[ "$name" != "$expected_name" ]] || additional=false
+    done
+    if [[ "$additional" == true && " ${additional_names[*]} " != *" $name "* ]]; then
+      additional_names+=("$name")
+    fi
+  done < <(sed '1,2d' "$fonts_file")
+  if ((${#additional_names[@]} > 0)); then
+    printf 'bakedocs: PDF contains additional fonts that may indicate glyph fallback:' >&2
+    for additional in "${additional_names[@]}"; do
+      printf ' %s' "$additional" >&2
+    done
+    printf '\n' >&2
   fi
 }
 
@@ -350,6 +532,7 @@ render_document_html() {
   local target="$3"
   local source_dir="${source%/*}"
   local document_style
+  local style_header="$temp_dir/document-styles.html"
   local offline_flag=0
   local pandoc_executable
   local -a pandoc_args
@@ -357,6 +540,13 @@ render_document_html() {
   document_style="$(brand_style "$brand_dir" document)"
   pandoc_executable="$(find_pandoc)" || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
   [[ "$offline" == true ]] && offline_flag=1
+  {
+    printf '<style>\n'
+    cat "$brand_dir/tokens.css"
+    cat "$document_style"
+    [[ ! -s "$font_style" ]] || cat "$font_style"
+    printf '</style>\n'
+  } > "$style_header"
   pandoc_args=(
     "$source"
     --from=markdown-raw_html-raw_attribute
@@ -365,18 +555,24 @@ render_document_html() {
     --embed-resources
     --toc
     --metadata-file="$brand_dir/brand.yml"
+  )
+  for values_file in "${values_files[@]}"; do
+    pandoc_args+=(--metadata-file="$values_file")
+  done
+  pandoc_args+=(
     --template="$script_dir/templates/document.html"
     --resource-path="$source_dir:$brand_dir"
+    --lua-filter="$script_dir/filters/metadata-interpolation.lua"
     --lua-filter="$script_dir/filters/resources.lua"
-    --css="$brand_dir/tokens.css"
-    --css="$document_style"
-    --output="$target"
   )
+  pandoc_args+=(--output="$target")
 
   run_bounded pandoc env \
-    BAKEDOCS_BRAND_DIR="$brand_dir" \
+    BAKEDOCS_BRAND_LOGO="$brand_logo" \
+    BAKEDOCS_DOCUMENT_HEADER="$style_header" \
     BAKEDOCS_EMBED_LOCAL_IMAGES=0 \
     BAKEDOCS_OFFLINE="$offline_flag" \
+    BAKEDOCS_OUTPUT_MODE=document \
     "$pandoc_executable" "${pandoc_args[@]}"
 }
 
@@ -387,6 +583,7 @@ render_slides_html() {
   local reveal_style
   local style_header="$temp_dir/reveal-styles.html"
   local pandoc_executable
+  local -a pandoc_args
 
   reveal_style="$(brand_style "$brand_dir" reveal)"
   pandoc_executable="$(find_pandoc)" || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
@@ -394,24 +591,38 @@ render_slides_html() {
     printf '<style>\n'
     cat "$brand_dir/tokens.css"
     cat "$reveal_style"
+    [[ ! -s "$font_style" ]] || cat "$font_style"
     printf '</style>\n'
   } > "$style_header"
 
+  pandoc_args=(
+    "$source"
+    --from=markdown-raw_html-raw_attribute
+    --to=revealjs
+    --standalone
+    --slide-level=2
+    --metadata-file="$brand_dir/brand.yml"
+  )
+  for values_file in "${values_files[@]}"; do
+    pandoc_args+=(--metadata-file="$values_file")
+  done
+  pandoc_args+=(
+    --template="$script_dir/templates/reveal.html"
+    --resource-path="${source%/*}:$brand_dir"
+    --lua-filter="$script_dir/filters/metadata-interpolation.lua"
+    --lua-filter="$script_dir/filters/resources.lua"
+    --variable="revealjs-url:$revealjs_url"
+    --output="$target"
+  )
+
   run_bounded pandoc env \
-    BAKEDOCS_BRAND_DIR="$brand_dir" \
+    BAKEDOCS_BRAND_LOGO="$brand_logo" \
     BAKEDOCS_EMBED_LOCAL_IMAGES=1 \
     BAKEDOCS_OFFLINE=0 \
-    "$pandoc_executable" "$source" \
-    --from=markdown-raw_html-raw_attribute \
-    --to=revealjs \
-    --standalone \
-    --slide-level=2 \
-    --template="$script_dir/templates/reveal.html" \
-    --include-in-header="$style_header" \
-    --resource-path="${source%/*}:$brand_dir" \
-    --lua-filter="$script_dir/filters/resources.lua" \
-    --variable="revealjs-url:$revealjs_url" \
-    --output="$target"
+    BAKEDOCS_OUTPUT_MODE=slides \
+    BAKEDOCS_REVEAL_HEADER="$style_header" \
+    BAKEDOCS_REVEALJS_URL="$revealjs_url" \
+    "$pandoc_executable" "${pandoc_args[@]}"
 }
 
 render_pdf() {
@@ -442,6 +653,7 @@ render_pdf() {
   )
 
   run_bounded chromium "${command_args[@]}" 1>&2
+  verify_pdf_font_contract "$target" "$brand_dir"
 }
 
 default_output_path() {
@@ -487,6 +699,9 @@ render_command() {
   local brand_dir
   local staged_output
   local staged_extension
+  local values_input
+  local values_path
+  local values_absolute
 
   source_path="$(expand_path "$source_input")"
   source_absolute="$(absolute_path "$source_path")"
@@ -506,8 +721,18 @@ render_command() {
   [[ -d "$output_parent" && -w "$output_parent" ]] || fail "output directory is not writable: $output_parent" 2
 
   brand_dir="$(resolve_brand "$brand_id")"
+  brand_logo="$(resolve_brand_logo "$brand_dir")" || return
   find_pandoc >/dev/null || fail 'pandoc is required; install Pandoc or set BAKEDOCS_PANDOC' 127
   [[ "$render_timeout" =~ ^[1-9][0-9]*$ ]] || fail 'BAKEDOCS_RENDER_TIMEOUT must be a positive integer' 2
+
+  values_files=()
+  for values_input in "${values_options[@]}"; do
+    values_path="$(expand_path "$values_input")"
+    values_absolute="$(absolute_path "$values_path")"
+    [[ -f "$values_absolute" && -r "$values_absolute" ]] || fail "values input is not a readable file: $values_input" 2
+    (($(wc -c < "$values_absolute") <= 1024 * 1024)) || fail "values input exceeds the 1 MiB limit: $values_input" 2
+    values_files+=("$values_absolute")
+  done
 
   if [[ "$offline" == true ]]; then
     [[ "$kind" != slides ]] || fail 'slides require the pinned Reveal.js CDN and cannot be rendered with --offline' 2
@@ -516,6 +741,8 @@ render_command() {
 
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs.XXXXXXXX")"
   trap cleanup EXIT
+  font_style="$temp_dir/brand-fonts.css"
+  write_brand_font_css "$brand_dir" "$font_style"
   if [[ "$kind" == pdf ]]; then
     staged_extension="pdf"
   else
@@ -545,6 +772,8 @@ check_command() {
   local brands
   local version
   local version_status
+  local font_contract_file
+  local font_status
 
   [[ "$render_timeout" =~ ^[1-9][0-9]*$ ]] || fail 'BAKEDOCS_RENDER_TIMEOUT must be a positive integer' 2
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-check.XXXXXXXX")"
@@ -577,26 +806,40 @@ check_command() {
     status=1
   fi
 
+  if command -v pdffonts > /dev/null 2>&1; then
+    printf 'pdffonts: available\n'
+  else
+    printf 'pdffonts: unavailable (required to verify configured PDF fonts)\n'
+  fi
+
   brands="$(list_brands)" || status=1
   if [[ -n "$brands" ]]; then
     printf 'brands:\n'
     while IFS= read -r brand_id; do
       [[ -n "$brand_id" ]] || continue
       brand_dir="$(resolve_brand "$brand_id")"
-      logo="$(yaml_scalar logo "$brand_dir/brand.yml")"
-      if [[ -z "$logo" ]]; then
-        printf '  %s: ready (%s; no logo)\n' "$brand_id" "$brand_dir"
-      elif [[ "$logo" == http://* || "$logo" == https://* ]]; then
-        printf '  %s: remote logo (%s; %s)\n' "$brand_id" "$logo" "$brand_dir"
-      else
-        logo="$(expand_path "$logo")"
-        if [[ "$logo" == /* ]]; then
-          logo_path="$logo"
+      font_contract_file="$temp_dir/font-$brand_id.css"
+      write_brand_font_css "$brand_dir" "$font_contract_file"
+      font_status=''
+      if [[ -s "$font_contract_file" ]]; then
+        if command -v pdffonts > /dev/null 2>&1; then
+          font_status='; fonts ready'
         else
-          logo_path="$brand_dir/$logo"
+          font_status='; PDF font verification unavailable'
+          status=1
         fi
+      fi
+      logo="$(resolve_brand_logo "$brand_dir")" || return
+      if [[ -z "$logo" ]]; then
+        printf '  %s: ready (%s; no logo%s)\n' "$brand_id" "$brand_dir" "$font_status"
+      elif [[ "$logo" == http://* || "$logo" == https://* || "$logo" == //* ]]; then
+        printf '  %s: remote logo (%s%s)\n' "$brand_id" "$brand_dir" "$font_status"
+      elif [[ "$logo" == data:* ]]; then
+        printf '  %s: ready (%s; embedded logo%s)\n' "$brand_id" "$brand_dir" "$font_status"
+      else
+        logo_path="$logo"
         if [[ -r "$logo_path" ]]; then
-          printf '  %s: ready (%s)\n' "$brand_id" "$brand_dir"
+          printf '  %s: ready (%s%s)\n' "$brand_id" "$brand_dir" "$font_status"
         else
           printf '  %s: missing logo (%s)\n' "$brand_id" "$logo_path"
           status=1
@@ -634,6 +877,18 @@ while (($#)); do
       output_option="${1#*=}"
       [[ -n "$output_option" ]] || fail '--output requires a non-empty path' 2
       output_option_set=true
+      shift
+      ;;
+    --values)
+      (($# >= 2)) || fail '--values requires a path' 2
+      [[ -n "$2" ]] || fail '--values requires a non-empty path' 2
+      values_options+=("$2")
+      shift 2
+      ;;
+    --values=*)
+      values_path="${1#*=}"
+      [[ -n "$values_path" ]] || fail '--values requires a non-empty path' 2
+      values_options+=("$values_path")
       shift
       ;;
     --offline)
@@ -677,7 +932,7 @@ case "$command_name" in
     render_command "$command_name" "$2" "$3"
     ;;
   brands)
-    [[ "$output_option_set" == false && "$offline" == false ]] || fail '--output and --offline apply only to rendering commands' 2
+    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, and --offline apply only to rendering commands' 2
     case "${2:-}" in
       list)
         (($# == 2)) || fail 'brands list takes no positional arguments' 2
@@ -697,12 +952,12 @@ case "$command_name" in
     ;;
   check)
     (($# == 1)) || fail 'check takes no positional arguments' 2
-    [[ "$output_option_set" == false && "$offline" == false ]] || fail '--output and --offline apply only to rendering commands' 2
+    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, and --offline apply only to rendering commands' 2
     check_command
     ;;
   version)
     (($# == 1)) || fail 'version takes no positional arguments' 2
-    [[ "$brands_dir_option_set" == false && "$output_option_set" == false && "$offline" == false ]] || fail 'version does not accept rendering options' 2
+    [[ "$brands_dir_option_set" == false && "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail 'version does not accept rendering options' 2
     printf 'bakedocs %s\n' "$bakedocs_version"
     ;;
   *)

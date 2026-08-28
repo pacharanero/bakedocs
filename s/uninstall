@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Remove an installation created by s/install without touching unrelated files
+# under the selected prefix. Do not uninstall while a render is active.
+
+set -euo pipefail
+
+invocation_dir="$(pwd -P)"
+prefix=""
+readonly marker_value="bakedocs-user-install-v1"
+
+usage() {
+  cat <<'EOF'
+Usage: s/uninstall [--prefix <PATH>]
+
+Remove a bakedocs installation managed by s/install. Other files under the
+prefix are preserved.
+EOF
+}
+
+fail() {
+  printf 'bakedocs uninstaller: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+expand_path() {
+  case "$1" in
+    '~')
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+      printf '%s\n' "$HOME"
+      ;;
+    '~/'*)
+      [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+      printf '%s/%s\n' "$HOME" "${1#\~/}"
+      ;;
+    \~*) fail "~user paths are not supported: $1" 2 ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+reject_symlink_components() {
+  local path="$1"
+  local current=""
+  local part
+  local -a parts
+
+  [[ "$path" == /* && "$path" != / ]] || fail "prefix must be an absolute path below /: $path" 2
+  [[ ! "$path" =~ [[:cntrl:]] ]] || fail 'prefix must not contain control characters' 2
+  IFS='/' read -r -a parts <<< "${path#/}"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) continue ;;
+      ..) fail "prefix must not contain '..': $path" 2 ;;
+    esac
+    current="$current/$part"
+    [[ ! -L "$current" ]] || fail "refusing symlinked installation path: $current"
+  done
+}
+
+is_managed_target() {
+  [[ "$1" =~ ^\.\./lib/bakedocs/releases/[a-zA-Z0-9._-]+/bakedocs$ ]]
+}
+
+while (($#)); do
+  case "$1" in
+    --prefix)
+      (($# >= 2)) || fail '--prefix requires a path' 2
+      prefix="$2"
+      [[ -n "$prefix" ]] || fail '--prefix requires a non-empty path' 2
+      shift 2
+      ;;
+    --prefix=*)
+      prefix="${1#*=}"
+      [[ -n "$prefix" ]] || fail '--prefix requires a non-empty path' 2
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) fail "unknown option: $1" 2 ;;
+  esac
+done
+
+if [[ -z "$prefix" ]]; then
+  [[ -n "${HOME:-}" ]] || fail 'HOME is not set; use --prefix'
+  prefix="$HOME/.local"
+else
+  prefix="$(expand_path "$prefix")"
+  [[ "$prefix" == /* ]] || prefix="$invocation_dir/$prefix"
+fi
+
+app_root="$prefix/lib/bakedocs"
+marker="$app_root/.managed-by-bakedocs"
+entry="$prefix/bin/bakedocs"
+reject_symlink_components "$app_root"
+reject_symlink_components "$prefix/bin"
+
+if [[ ! -e "$app_root" && ! -L "$app_root" && ! -e "$entry" && ! -L "$entry" ]]; then
+  printf 'bakedocs is not installed under %s\n' "$prefix"
+  exit 0
+fi
+
+[[ -d "$app_root" && ! -L "$app_root" && -f "$marker" && ! -L "$marker" ]] || fail "refusing unmanaged application path: $app_root"
+[[ "$(< "$marker")" == "$marker_value" ]] || fail "ownership marker does not match: $marker"
+
+if [[ -e "$entry" || -L "$entry" ]]; then
+  [[ -L "$entry" ]] || fail "refusing to remove unrelated command: $entry"
+  target="$(readlink "$entry")"
+  is_managed_target "$target" || fail "refusing to remove unrelated symlink: $entry"
+  rm "$entry"
+fi
+
+rm -rf "$app_root"
+
+printf 'Uninstalled bakedocs from %s\n' "$prefix"

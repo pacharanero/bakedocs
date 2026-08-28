@@ -12,7 +12,30 @@ end
 
 local embed_local_images = os.getenv('BAKEDOCS_EMBED_LOCAL_IMAGES') == '1'
 local offline = os.getenv('BAKEDOCS_OFFLINE') == '1'
-local brand_dir = os.getenv('BAKEDOCS_BRAND_DIR')
+local brand_logo = os.getenv('BAKEDOCS_BRAND_LOGO') or ''
+local output_mode = os.getenv('BAKEDOCS_OUTPUT_MODE') or ''
+local document_header = os.getenv('BAKEDOCS_DOCUMENT_HEADER') or ''
+local reveal_header = os.getenv('BAKEDOCS_REVEAL_HEADER') or ''
+local revealjs_url = os.getenv('BAKEDOCS_REVEALJS_URL') or ''
+local supported_languages = {
+  af = true, alt = true, am = true, ar = true, ['as'] = true, ast = true,
+  az = true, be = true, bg = true, bn = true, bo = true, br = true, bs = true,
+  bua = true, ca = true, ckb = true, cs = true, cu = true, cy = true,
+  cz = true, da = true, de = true, dsb = true, el = true, en = true,
+  eo = true, es = true, et = true, eu = true, fa = true, fi = true,
+  fil = true, fr = true, fur = true, ga = true, gd = true, gl = true,
+  grc = true, gu = true, ha = true, he = true, hi = true, hr = true,
+  hsb = true, hu = true, hy = true, ia = true, id = true, ['is'] = true,
+  it = true, ja = true, ka = true, km = true, kmr = true, kn = true,
+  ko = true, la = true, lb = true, lo = true, lt = true, lv = true,
+  mk = true, ml = true, mn = true, mr = true, ms = true, nb = true,
+  nko = true, nl = true, nn = true, no = true, oc = true, ['or'] = true,
+  pa = true, pl = true, pms = true, pt = true, rm = true, ro = true,
+  ru = true, se = true, si = true, sk = true, sl = true, sq = true,
+  sr = true, sv = true, ta = true, te = true, th = true, tk = true,
+  tr = true, ua = true, ug = true, uk = true, ur = true, vi = true,
+  zh = true,
+}
 
 local function resource_kind(source)
   local lower_source = source:lower()
@@ -28,7 +51,7 @@ local function transform_resource(source, embed)
 
   if remote then
     if offline then
-      error('remote image is not permitted in offline mode: ' .. source)
+      error('remote image is not permitted in offline mode')
     end
     return source
   end
@@ -66,6 +89,49 @@ end
 function Meta(meta)
   local changed = false
 
+  pandoc.Pandoc({}, meta):walk({
+    Image = function()
+      error('images are not permitted in document metadata')
+    end,
+    RawInline = function()
+      error('raw content is not permitted in document metadata')
+    end,
+    RawBlock = function()
+      error('raw content is not permitted in document metadata')
+    end,
+  })
+
+  meta['header-includes'] = nil
+  meta['include-before'] = nil
+  meta['include-after'] = nil
+  meta.css = nil
+  if output_mode == 'document' then
+    local file = io.open(document_header, 'rb')
+    if file == nil then
+      error('trusted document style header could not be loaded')
+    end
+    local contents = file:read('*a')
+    file:close()
+    meta['header-includes'] = pandoc.MetaBlocks({pandoc.RawBlock('html', contents)})
+  elseif output_mode == 'slides' then
+    local file = io.open(reveal_header, 'rb')
+    if file == nil then
+      error('trusted Reveal style header could not be loaded')
+    end
+    local contents = file:read('*a')
+    file:close()
+    meta['header-includes'] = pandoc.MetaBlocks({pandoc.RawBlock('html', contents)})
+    meta['revealjs-url'] = pandoc.MetaString(revealjs_url)
+  else
+    error('bakedocs output mode is invalid')
+  end
+
+  if brand_logo == '' then
+    meta.logo = nil
+  else
+    meta.logo = pandoc.MetaString(brand_logo)
+  end
+
   if meta.title == nil or pandoc.utils.stringify(meta.title):match('^%s*$') then
     error('source metadata requires a non-empty title')
   end
@@ -73,6 +139,13 @@ function Meta(meta)
   if meta.lang == nil and meta.language ~= nil then
     meta.lang = meta.language
     changed = true
+  end
+  if meta.lang ~= nil then
+    local language = pandoc.utils.stringify(meta.lang)
+    local primary = language:match('^([A-Za-z]+)')
+    if not language:match('^[A-Za-z][A-Za-z0-9]*[-A-Za-z0-9]*$') or language:match('%-%-') or language:sub(-1) == '-' or primary == nil or not supported_languages[primary:lower()] then
+      error('document language is invalid')
+    end
   end
 
   -- Brand-relative logos become data URIs in document HTML and PDF intermediates.
@@ -82,13 +155,16 @@ function Meta(meta)
 
     if remote then
       if offline then
-        error('remote logo is not permitted in offline mode: ' .. logo)
+        error('remote logo is not permitted in offline mode')
       end
     elseif scheme ~= 'data' then
-      if logo:sub(1, 1) ~= '/' then
-        logo = brand_dir .. '/' .. logo
+      local loaded, mime_type, contents = pcall(pandoc.mediabag.fetch, logo)
+      if not loaded then
+        error('logo resource could not be loaded')
       end
-      local mime_type, contents = pandoc.mediabag.fetch(logo)
+      if not mime_type:match('^image/') or #contents > 10 * 1024 * 1024 then
+        error('logo resource is not a supported image within the 10 MiB limit')
+      end
       meta.logo = pandoc.MetaString(pandoc.mediabag.make_data_uri(mime_type, contents))
       changed = true
     end
@@ -123,7 +199,7 @@ function Link(link)
   local normalized_target = link.target:lower():gsub('[%z\1-\32]', '')
   local scheme = normalized_target:match('^([a-z][a-z0-9+.-]*):')
   if scheme ~= nil and scheme ~= 'http' and scheme ~= 'https' and scheme ~= 'mailto' and scheme ~= 'tel' then
-    error('unsafe link scheme is not permitted: ' .. scheme)
+    error('unsafe link scheme is not permitted')
   end
 end
 

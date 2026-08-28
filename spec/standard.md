@@ -44,9 +44,9 @@ Do not use “template” to mean all of these at once. A Pandoc HTML template, 
 Bare `bakedocs` prints compact help and exits successfully.
 
 ```text
-bakedocs pdf <SOURCE> <BRAND-ID> [--output <PATH>]
-bakedocs html <SOURCE> <BRAND-ID> [--output <PATH>]
-bakedocs slides <SOURCE> <BRAND-ID> [--output <PATH>]
+bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
 bakedocs brands list
 bakedocs brands show <BRAND-ID>
 bakedocs check
@@ -57,6 +57,7 @@ Global options:
 
 ```text
     --brands-dir <PATH>
+    --values <PATH>       # repeatable
     --output <PATH>
     --offline
 -V, --version
@@ -203,18 +204,29 @@ language: "en-GB"
 
 Unknown metadata passes through to Pandoc. Required fields may be declared by a project config, but the built-in renderer requires only a title for cover-page output.
 
+## Metadata interpolation
+
+`--values <PATH>` is repeatable on `pdf`, `html`, and `slides`. Each path is an explicit readable YAML or JSON metadata input no larger than 1 MiB and follows the normal PWD-relative and `~` expansion rules. Pandoc applies the selected brand metadata first, values files in command-line order, and source front matter last. Later files replace earlier values at the same top-level key; maps are not recursively merged. The selected profile exclusively owns resource-bearing logo metadata, regardless of merged metadata layers.
+
+The interpolation grammar is `{{ identifier }}` with optional surrounding whitespace and dotted lookup. Each identifier segment matches `[A-Za-z_][A-Za-z0-9_-]*`. `{{{{ identifier }}}}` emits a literal placeholder. There are no expressions, functions, filters, control flow, includes, environment values, or evaluation. Expansion is limited to 1 MiB per render and nested references are limited to 32 levels.
+
+Interpolation occurs after Markdown parsing in metadata, prose, headings, tables, link labels, link titles, and link destinations. Inline code, code blocks, math, attributes, identifiers, image paths, and citation keys remain literal. Resolved values are scalar metadata converted to plain text; maps, lists, missing paths, malformed placeholders, and cycles are errors. Diagnostics list identifiers but never resolved values. Values that resemble Markdown or HTML remain inert text, and interpolated link destinations pass through the normal unsafe-scheme validation before output publication.
+
+Images and raw nodes are forbidden in all document metadata. The renderer replaces merged CSS, header-include, body-include, logo, and Reveal.js URL metadata with trusted runtime and selected-profile values before writing output. Language tags are validated against the supported Pandoc translation set with value-free diagnostics.
+
 ## Rendering pipeline
 
 ### HTML and PDF
 
 1. Resolve configuration and brand profile.
-2. Validate all local inputs and offline policy.
+2. Validate all local inputs, values layers, and offline policy.
 3. Invoke Pandoc with an argument array, never through a shell string.
-4. Generate standalone semantic HTML with embedded local assets by default.
-5. Stop after HTML for `--to html`.
-6. Pass the exact intermediate HTML to the selected renderer adapter for `--to pdf`.
-7. Validate that every expected artefact exists and is non-empty.
-8. Write a render manifest next to the output when requested.
+4. Interpolate scalar metadata in the parsed document tree and apply the resource policy.
+5. Generate standalone semantic HTML with embedded local assets by default.
+6. Stop after HTML for `--to html`.
+7. Pass the exact intermediate HTML to the selected renderer adapter for `--to pdf`.
+8. Validate that every expected artefact exists and is non-empty.
+9. Write a render manifest next to the output when requested.
 
 The intermediate HTML can be retained with `--keep-intermediate`; otherwise a secure temporary directory is removed after successful or failed rendering.
 
@@ -264,7 +276,13 @@ On success, stdout contains only the primary output path. Warnings, tool version
 
 ## Portability
 
-The MVP ships as one Bash executable plus its templates and styles. Brand profiles remain external configuration; the fictional repository example is selected explicitly and is not an implicit installed default. Installation must put `bakedocs` on `$PATH` and preserve a reliable way for the script to find its accompanying data even when invoked through a symlink. Rendering engines remain external runtime capabilities. Platform discovery may recognise conventional executable names such as `chromium`, `chromium-browser`, `google-chrome`, and application bundle paths, but a configured explicit executable always wins.
+The MVP ships as one Bash executable plus its filters, templates, and styles. Brand profiles remain external configuration; the fictional repository example is selected explicitly and is not an implicit installed default. `s/install` uses `$HOME/.local` unless `--prefix` selects another path, creates a complete versioned payload under `<prefix>/lib/bakedocs/releases/`, and atomically replaces the relative `<prefix>/bin/bakedocs` symlink only after that payload validates. Previous payloads remain available for in-flight commands. The installer refuses unrelated or symlinked command and application paths, does not edit shell startup files, and does not install brand profiles. `s/uninstall` requires the regular bakedocs ownership marker before removing the managed command or payload and preserves unrelated prefix contents.
+
+Direct execution and relative or chained symlink invocation resolve the final executable before locating runtime data. Rendering engines remain external runtime capabilities. Platform discovery may recognise conventional executable names such as `chromium`, `chromium-browser`, `google-chrome`, and application bundle paths, but a configured explicit executable always wins.
+
+Brand profiles may define independent heading and body font contracts using top-level quoted scalar fields. Each configured role supplies a safe CSS family, a profile-contained local WOFF2, WOFF, TTF, or OTF file no larger than 10 MiB, a CSS weight and style, and the expected PDF PostScript font name. Absolute paths, traversal outside the profile, and escaping symlinks are rejected. The renderer embeds the file as a data URI and overrides the corresponding semantic font token. PDF output for a profile with a font contract requires `pdffonts` and is published only when every configured role's expected font is embedded with a Unicode map; complete role fallback is an error and preserves any existing output. Additional PDF fonts are reported as possible partial glyph fallback because Poppler does not expose semantic-role attribution. Font files require explicit provenance, copyright, and redistribution review.
+
+The checkout installer operates inside a prefix controlled by the invoking user and rejects symlinked path components at each operation boundary. Defending against another process owned by the same user replacing validated paths during installation or removal is outside this local installer's trust boundary.
 
 A Rust implementation is a later option only if evidence shows Bash cannot provide the required cross-platform installation, configuration parsing, diagnostics, testing, or distribution quality. It is not the default next step.
 
@@ -301,6 +319,7 @@ Tests should cover:
 - No network access in offline mode.
 - Semantic HTML assertions rather than brittle full-byte snapshots.
 - PDF page count, text extraction, links, dimensions, and metadata, with visual regression images used as reviewed supporting evidence.
+- Configured local-font embedding and deliberate PDF fallback detection.
 - Reveal.js slide count, horizontal and vertical structure, overflow checks, keyboard operation, and representative screenshots.
 
 ## Bakeoff decision gates

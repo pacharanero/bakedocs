@@ -98,6 +98,335 @@ assert_contains '<html lang="en-GB">' "$html_output"
 assert_contains '#123456' "$html_output"
 assert_contains 'data:image/svg+xml' "$html_output"
 
+values_one="$work_dir/values one.yml"
+cat > "$values_one" <<'EOF'
+provider:
+  name: "First Provider"
+  company-number: "12345"
+engagement:
+  label: "Draft"
+local: "Values value"
+multiline: |
+  line one
+  line two
+paragraphs: |-
+  first paragraph
+
+  second paragraph
+rich: '<script>alert("value")</script> *emphasis*'
+unsafe: "supersecrettoken:payload"
+recursive:
+  first: "{{ recursive.second }}"
+  second: "resolved recursively"
+EOF
+values_two="$work_dir/values-two.json"
+cat > "$values_two" <<'EOF'
+{"engagement":{"label":"Final"}}
+EOF
+interpolation_source="$work_dir/interpolation.md"
+cat > "$interpolation_source" <<'EOF'
+---
+title: "{{ engagement.label }}"
+local: "Source value"
+language: "en-GB"
+---
+
+# Welcome {{ provider.name }}
+
+Company {{ provider.company-number }}. Organisation {{ brand-name }}. Local {{ local }}.
+
+Multiline: {{ multiline }}.
+
+Paragraphs: {{ paragraphs }}.
+
+Recursive: {{ recursive.first }}.
+
+Literal: {{{{ provider.name }}}}.
+
+Inline code: `{{ missing.code }}`.
+
+```text
+{{ missing.block }}
+```
+
+[Registry {{ provider.name }}](https://example.test/{{ provider.company-number }} "Record {{ provider.company-number }}")
+
+[Encoded](https://example.test/a%20b/%7Braw%7D/{{ provider.company-number }})
+
+[Literal destination](https://example.test/{{{{ provider.company-number }}}})
+EOF
+interpolation_output="$work_dir/interpolation.html"
+"$root/bakedocs" html "$interpolation_source" test --brands-dir "$brand_root" \
+  --values "$values_one" --values="$values_two" --offline --output "$interpolation_output" > /dev/null
+assert_contains '<title>Final</title>' "$interpolation_output"
+assert_contains 'Welcome First Provider' "$interpolation_output"
+assert_contains 'Company 12345. Organisation Test Organisation.' "$interpolation_output"
+assert_contains 'Local Source' "$interpolation_output"
+assert_contains 'Multiline: line one line two.' "$interpolation_output"
+assert_contains 'Paragraphs: first paragraph second paragraph.' "$interpolation_output"
+assert_contains 'Recursive: resolved recursively.' "$interpolation_output"
+assert_contains 'Literal: {{ provider.name }}.' "$interpolation_output"
+assert_contains '{{ missing.code }}' "$interpolation_output"
+assert_contains '{{ missing.block }}' "$interpolation_output"
+assert_contains 'href="https://example.test/12345"' "$interpolation_output"
+assert_contains 'title="Record 12345"' "$interpolation_output"
+assert_contains 'href="https://example.test/a%20b/%7Braw%7D/12345"' "$interpolation_output"
+assert_contains 'href="https://example.test/{{ provider.company-number }}"' "$interpolation_output"
+
+replacement_values="$work_dir/replacement-values.yml"
+cat > "$replacement_values" <<'EOF'
+provider:
+  name: "Replacement Provider"
+EOF
+replacement_source="$work_dir/replacement.md"
+cat > "$replacement_source" <<'EOF'
+---
+title: "Replacement"
+---
+
+{{ provider.name }} {{ provider.company-number }}
+EOF
+if "$root/bakedocs" html "$replacement_source" test --brands-dir "$brand_root" \
+  --values "$values_one" --values "$replacement_values" --offline --output "$work_dir/replacement.html" > /dev/null 2> "$temp_dir/replacement-error.txt"; then
+  fail 'later values file unexpectedly retained an earlier nested key'
+fi
+assert_contains 'unresolved metadata path: provider.company-number' "$temp_dir/replacement-error.txt"
+
+interpolation_slides="$work_dir/interpolation-slides.md"
+cat > "$interpolation_slides" <<'EOF'
+---
+title: "{{ engagement.label }}"
+language: "en-GB"
+---
+
+# {{ provider.name }}
+
+Company {{ provider.company-number }}
+EOF
+interpolation_slides_output="$work_dir/interpolation-slides.html"
+"$root/bakedocs" slides "$interpolation_slides" test --brands-dir "$brand_root" \
+  --values "$values_one" --values "$values_two" --output "$interpolation_slides_output" > /dev/null
+assert_contains '<title>Final</title>' "$interpolation_slides_output"
+assert_contains 'First Provider' "$interpolation_slides_output"
+
+rich_source="$work_dir/rich-value.md"
+cat > "$rich_source" <<'EOF'
+---
+title: "Rich value"
+---
+
+{{ rich }}
+EOF
+rich_output="$work_dir/rich-value.html"
+"$root/bakedocs" html "$rich_source" test --brands-dir "$brand_root" \
+  --values "$values_one" --offline --output "$rich_output" > /dev/null
+assert_contains '&lt;script&gt;alert' "$rich_output"
+assert_contains '&lt;/script&gt; emphasis' "$rich_output"
+if grep -Fq '<script>alert("value")</script>' "$rich_output"; then
+  fail 'metadata interpolation emitted executable HTML'
+fi
+if grep -Fq '<em>emphasis</em>' "$rich_output"; then
+  fail 'metadata interpolation reparsed a value as Markdown'
+fi
+
+missing_source="$work_dir/missing-interpolation.md"
+cat > "$missing_source" <<'EOF'
+---
+title: "Missing values"
+---
+
+{{ missing.one }} and {{ missing.two }}
+EOF
+missing_output="$work_dir/missing-interpolation.html"
+printf 'preserve\n' > "$missing_output"
+if "$root/bakedocs" html "$missing_source" test --brands-dir "$brand_root" \
+  --values "$values_one" --offline --output "$missing_output" > /dev/null 2> "$temp_dir/missing-values-error.txt"; then
+  fail 'unresolved metadata interpolation unexpectedly succeeded'
+fi
+assert_contains 'unresolved metadata path: missing.one' "$temp_dir/missing-values-error.txt"
+assert_contains 'unresolved metadata path: missing.two' "$temp_dir/missing-values-error.txt"
+assert_equal 'preserve' "$(< "$missing_output")" 'failed interpolation output preservation'
+
+malformed_source="$work_dir/malformed-interpolation.md"
+cat > "$malformed_source" <<'EOF'
+---
+title: "Malformed value"
+---
+
+{{ provider.name | upper }}
+EOF
+if "$root/bakedocs" html "$malformed_source" test --brands-dir "$brand_root" \
+  --values "$values_one" --offline --output "$work_dir/malformed.html" > /dev/null 2> "$temp_dir/malformed-interpolation-error.txt"; then
+  fail 'malformed metadata interpolation unexpectedly succeeded'
+fi
+assert_contains 'malformed metadata placeholder' "$temp_dir/malformed-interpolation-error.txt"
+
+unsafe_interpolation="$work_dir/unsafe-interpolation.md"
+cat > "$unsafe_interpolation" <<'EOF'
+---
+title: "Unsafe value"
+---
+
+[Unsafe]({{ unsafe }})
+EOF
+if "$root/bakedocs" html "$unsafe_interpolation" test --brands-dir "$brand_root" \
+  --values "$values_one" --offline --output "$work_dir/unsafe-interpolation.html" > /dev/null 2> "$temp_dir/unsafe-interpolation-error.txt"; then
+  fail 'unsafe interpolated link unexpectedly succeeded'
+fi
+assert_contains 'unsafe link scheme is not permitted' "$temp_dir/unsafe-interpolation-error.txt"
+if grep -Fq 'supersecrettoken' "$temp_dir/unsafe-interpolation-error.txt"; then
+  fail 'resolved metadata value leaked through an unsafe-link diagnostic'
+fi
+
+cycle_values="$work_dir/cycle.yml"
+cat > "$cycle_values" <<'EOF'
+cycle-a: "{{ cycle-b }}"
+cycle-b: "{{ cycle-a }}"
+EOF
+cycle_source="$work_dir/cycle.md"
+cat > "$cycle_source" <<'EOF'
+---
+title: "Cycle"
+---
+
+{{ cycle-a }}
+EOF
+if "$root/bakedocs" html "$cycle_source" test --brands-dir "$brand_root" \
+  --values "$cycle_values" --offline --output "$work_dir/cycle.html" > /dev/null 2> "$temp_dir/cycle-error.txt"; then
+  fail 'cyclic metadata interpolation unexpectedly succeeded'
+fi
+assert_contains 'cyclic metadata path' "$temp_dir/cycle-error.txt"
+
+expansion_values="$work_dir/expansion.yml"
+cat > "$expansion_values" <<'EOF'
+level-0: "1234567890"
+level-1: "{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}{{ level-0 }}"
+level-2: "{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}{{ level-1 }}"
+level-3: "{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}{{ level-2 }}"
+level-4: "{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}{{ level-3 }}"
+level-5: "{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}{{ level-4 }}"
+level-6: "{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}{{ level-5 }}"
+EOF
+expansion_source="$work_dir/expansion.md"
+cat > "$expansion_source" <<'EOF'
+---
+title: "Expansion"
+---
+
+{{ level-6 }}
+EOF
+if "$root/bakedocs" html "$expansion_source" test --brands-dir "$brand_root" \
+  --values "$expansion_values" --offline --output "$work_dir/expansion.html" > /dev/null 2> "$temp_dir/expansion-error.txt"; then
+  fail 'oversized metadata expansion unexpectedly succeeded'
+fi
+assert_contains 'metadata expansion limit exceeded' "$temp_dir/expansion-error.txt"
+
+secret='/etc/passwd'
+logo_values="$work_dir/logo-values.yml"
+printf 'secret: "%s"\n' "$secret" > "$logo_values"
+logo_source="$work_dir/logo-interpolation.md"
+cat > "$logo_source" <<'EOF'
+---
+title: "Logo interpolation"
+logo: "{{ secret }}"
+---
+
+Body.
+EOF
+logo_output="$work_dir/logo-interpolation.html"
+"$root/bakedocs" html "$logo_source" test --brands-dir "$brand_root" \
+  --values "$logo_values" --offline --output "$logo_output" > /dev/null
+assert_contains 'data:image/svg+xml' "$logo_output"
+if grep -Fq 'root:x:' "$logo_output"; then
+  fail 'values metadata replaced the brand-owned logo resource'
+fi
+
+metadata_image_values="$work_dir/metadata-image-values.yml"
+cat > "$metadata_image_values" <<'EOF'
+unused-image: '![leak](/etc/passwd)'
+EOF
+metadata_image_output="$work_dir/metadata-image.html"
+printf 'preserve\n' > "$metadata_image_output"
+if "$root/bakedocs" html "$work_dir/report source.md" test --brands-dir "$brand_root" \
+  --values "$metadata_image_values" --offline --output "$metadata_image_output" > /dev/null 2> "$temp_dir/metadata-image-error.txt"; then
+  fail 'metadata image unexpectedly succeeded'
+fi
+assert_contains 'images are not permitted in document metadata' "$temp_dir/metadata-image-error.txt"
+assert_equal 'preserve' "$(< "$metadata_image_output")" 'metadata-image output preservation'
+if grep -Fq '/etc/passwd' "$temp_dir/metadata-image-error.txt"; then
+  fail 'metadata-image diagnostic leaked its resolved path'
+fi
+
+metadata_css_values="$work_dir/metadata-css-values.yml"
+cat > "$metadata_css_values" <<'EOF'
+css: "https://example.invalid/untrusted.css"
+EOF
+metadata_css_output="$work_dir/metadata-css.html"
+"$root/bakedocs" slides "$work_dir/slides source.md" test --brands-dir "$brand_root" \
+  --values "$metadata_css_values" --output "$metadata_css_output" > /dev/null
+if grep -Fq 'untrusted.css' "$metadata_css_output"; then
+  fail 'metadata CSS escaped the trusted Reveal style boundary'
+fi
+
+language_values="$work_dir/language-values.yml"
+cat > "$language_values" <<'EOF'
+secret-language: "super-secret-language-value"
+EOF
+language_source="$work_dir/language-interpolation.md"
+cat > "$language_source" <<'EOF'
+---
+title: "Language"
+language: "{{ secret-language }}"
+---
+
+Body.
+EOF
+if "$root/bakedocs" html "$language_source" test --brands-dir "$brand_root" \
+  --values "$language_values" --offline --output "$work_dir/language.html" > /dev/null 2> "$temp_dir/language-error.txt"; then
+  fail 'invalid interpolated language unexpectedly succeeded'
+fi
+assert_contains 'document language is invalid' "$temp_dir/language-error.txt"
+if grep -Fq 'super-secret-language-value' "$temp_dir/language-error.txt"; then
+  fail 'resolved metadata value leaked through a language diagnostic'
+fi
+
+supported_language_source="$work_dir/supported-language.md"
+cat > "$supported_language_source" <<'EOF'
+---
+title: "Supported language"
+language: "gl"
+---
+
+Body.
+EOF
+supported_language_output="$work_dir/supported-language.html"
+"$root/bakedocs" html "$supported_language_source" test --brands-dir "$brand_root" \
+  --offline --output "$supported_language_output" > /dev/null
+assert_contains '<html lang="gl">' "$supported_language_output"
+
+malformed_values="$work_dir/malformed-values.yml"
+printf 'provider: [unterminated\n' > "$malformed_values"
+if "$root/bakedocs" html "$interpolation_source" test --brands-dir "$brand_root" \
+  --values "$malformed_values" --offline --output "$work_dir/malformed-values.html" > /dev/null 2> "$temp_dir/malformed-values-error.txt"; then
+  fail 'malformed values input unexpectedly succeeded'
+fi
+
+if "$root/bakedocs" html "$interpolation_source" test --brands-dir "$brand_root" \
+  --values "$work_dir/missing-values.yml" --offline --output "$work_dir/missing-values-file.html" > /dev/null 2> "$temp_dir/missing-values-file-error.txt"; then
+  fail 'missing values input unexpectedly succeeded'
+fi
+assert_contains 'values input is not a readable file' "$temp_dir/missing-values-file-error.txt"
+
+oversized_values="$work_dir/oversized-values.yml"
+printf 'unused: "' > "$oversized_values"
+dd if=/dev/zero bs=1024 count=1025 2> /dev/null | tr '\0' x >> "$oversized_values"
+printf '"\n' >> "$oversized_values"
+if "$root/bakedocs" html "$interpolation_source" test --brands-dir "$brand_root" \
+  --values "$oversized_values" --offline --output "$work_dir/oversized-values.html" > /dev/null 2> "$temp_dir/oversized-values-error.txt"; then
+  fail 'oversized values input unexpectedly succeeded'
+fi
+assert_contains 'values input exceeds the 1 MiB limit' "$temp_dir/oversized-values-error.txt"
+
 default_output="$(cd "$work_dir" && "$root/bakedocs" html 'report source.md' test --brands-dir "$brand_root")"
 assert_equal 'report source.html' "$default_output" 'default output path'
 [[ -s "$work_dir/report source.html" ]] || fail 'default HTML output is missing or empty'
@@ -309,8 +638,9 @@ assert_contains 'version exceeded the 1s render timeout' "$temp_dir/version-time
 
 pdf_output="$work_dir/rendered report.pdf"
 actual_output="$(BAKEDOCS_CHROMIUM="$fake_chromium" "$root/bakedocs" pdf \
-  "$work_dir/report source.md" test \
+  "$interpolation_source" test \
   --brands-dir "$brand_root" \
+  --values "$values_one" --values "$values_two" \
   --output "$pdf_output")"
 assert_equal "$pdf_output" "$actual_output" 'PDF output path'
 [[ -s "$pdf_output" ]] || fail 'PDF output is missing or empty'

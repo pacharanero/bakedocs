@@ -27,12 +27,15 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 - Markdown remains the maintained content source. HTML is the semantic intermediate representation for PDF.
 - Print and Reveal.js styles stay separate while consuming shared semantic brand tokens.
 - Source raw HTML remains disabled. Use supported Markdown structures and fenced divs rather than allowing source content to execute in Chromium.
+- Metadata interpolation remains a strict scalar lookup over parsed Pandoc content. Do not grow it into a general template language or reparse resolved values as Markdown.
+- Metadata cannot supply images, raw content, CSS, includes, logos, or renderer URLs; those resource-bearing controls remain trusted runtime or selected-profile inputs.
 - Offline document rendering rejects remote image resources; slides remain unavailable offline while Reveal.js uses its pinned CDN.
 - `BRAND-ID` identifies a brand directory; profile-relative asset paths resolve against that directory, never the caller's PWD.
 - Invocation must work from any directory once `bakedocs` is installed on `$PATH`, including through a symlink.
 - The common PDF path remains Pandoc plus Chromium until a real requirement proves it insufficient.
 - Do not add Rust, Python, Node, WeasyPrint, Vivliostyle, or another runtime merely to make the project look more complete. Admit complexity in response to evidence.
 - Do not copy logos, fonts, contracts, private administrative material, credentials, or personal data into this repository without checking provenance, redistribution rights, and necessity.
+- A configured font contract is fail-closed: keep font files local and embedded, preserve the 10 MiB bound, and verify the expected PostScript names before publishing PDF output.
 - Never claim PDF/UA compliance from Chromium's `Tagged: yes` flag alone.
 
 ## Immediate Direction
@@ -40,9 +43,9 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 Continue hardening the smallest useful Bash CLI described by [R4](roadmap.md):
 
 ```console
-bakedocs pdf <SOURCE> <BRAND-ID> [--output <PATH>]
-bakedocs html <SOURCE> <BRAND-ID> [--output <PATH>]
-bakedocs slides <SOURCE> <BRAND-ID> [--output <PATH>]
+bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
 bakedocs brands list
 bakedocs check
 ```
@@ -52,10 +55,11 @@ Prefer a single readable executable until functions are genuinely reusable. Keep
 ## Workflow
 
 - `s/check-tools` - report which evaluated renderers are available.
+- `s/install` / `s/uninstall` - install or remove a guarded user-prefix runtime payload.
 - `s/render [brand]` - render the synthetic document and deck through the fictional example profile or `BAKEDOCS_BRANDS_DIR`.
 - `s/render-all` - regenerate outputs for every profile in the selected root.
 - `s/lint` - check every executable shell script's syntax.
-- `s/test` - parse maintained Markdown and run command-surface integration tests.
+- `s/test` - parse maintained Markdown and run command-surface, installation, and real-rendering conformance tests; the latter requires Chromium and Poppler utilities.
 
 For presentation changes, serve the repository over HTTP and inspect every stable slide at 1280 x 720 and phone landscape. For print changes, inspect every page produced by the example profile and at least the cover for any additional test profile; successful process exit is not visual proof.
 

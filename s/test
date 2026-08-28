@@ -24,4 +24,6 @@ pandoc "${markdown_files[@]}" \
   --output=/dev/null \
   "$@"
 
-exec tests/command-surface
+tests/command-surface
+tests/installation
+tests/rendering-conformance
