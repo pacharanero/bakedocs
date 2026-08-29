@@ -132,17 +132,27 @@ profile_file() {
 
 resolve_brand_logo() {
   local brand_dir="$1"
+  local candidate
   local configured
+  local expanded
   local resolved
   local size
 
   configured="$(yaml_scalar logo "$brand_dir/brand.yml")"
   [[ -n "$configured" ]] || return 0
+  [[ ! "$configured" =~ [[:cntrl:]] ]] || fail 'brand logo path contains control characters' 2
   if [[ "$configured" == http://* || "$configured" == https://* || "$configured" == //* || "$configured" == data:* ]]; then
     printf '%s\n' "$configured"
     return
   fi
-  resolved="$(profile_file "$brand_dir" "$configured" 'brand logo')" || return
+  expanded="$(expand_path "$configured")"
+  if [[ "$expanded" == /* ]]; then
+    candidate="$expanded"
+  else
+    candidate="$brand_dir/$expanded"
+  fi
+  resolved="$(resolve_existing_file "$candidate")" || fail "brand logo is not a readable regular file: $configured" 2
+  [[ -r "$resolved" ]] || fail "brand logo is not readable: $configured" 2
   size="$(wc -c < "$resolved")"
   ((size <= 10 * 1024 * 1024)) || fail 'brand logo exceeds the 10 MiB limit' 2
   printf '%s\n' "$resolved"

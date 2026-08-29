@@ -148,12 +148,12 @@ assert_contains 'brand heading font escapes the brand profile' "$temp_dir/escape
 logo_escape_root="$temp_dir/logo-escape-brands"
 mkdir -p "$logo_escape_root"
 cp -R "$root/examples/brands/example" "$logo_escape_root/logo-escape"
+outside_logo="$temp_dir/outside-logo.svg"
+cp "$logo_escape_root/logo-escape/assets/logo.svg" "$outside_logo"
 rm "$logo_escape_root/logo-escape/assets/logo.svg"
-ln -s /etc/passwd "$logo_escape_root/logo-escape/assets/logo.svg"
-if "$root/bakedocs" html "$root/fixtures/document.md" logo-escape \
-  --brands-dir "$logo_escape_root" --offline --output "$temp_dir/escaped-logo.html" > /dev/null 2> "$temp_dir/escaped-logo-error.txt"; then
-  fail 'brand logo symlink unexpectedly escaped its profile'
-fi
-assert_contains 'brand logo escapes the brand profile' "$temp_dir/escaped-logo-error.txt"
+ln -s "$outside_logo" "$logo_escape_root/logo-escape/assets/logo.svg"
+"$root/bakedocs" html "$root/fixtures/document.md" logo-escape \
+  --brands-dir "$logo_escape_root" --offline --output "$temp_dir/external-logo.html" > /dev/null
+assert_contains 'class="brand-logo" src="data:image/svg+xml;base64,' "$temp_dir/external-logo.html"
 
 printf 'Rendering conformance tests passed\n'

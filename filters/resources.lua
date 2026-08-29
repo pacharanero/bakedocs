@@ -148,7 +148,7 @@ function Meta(meta)
     end
   end
 
-  -- Brand-relative logos become data URIs in document HTML and PDF intermediates.
+  -- Brand-selected local logos become data URIs in document HTML and PDF intermediates.
   if meta.logo ~= nil then
     local logo = pandoc.utils.stringify(meta.logo)
     local scheme, remote = resource_kind(logo)

@@ -136,10 +136,10 @@ The final schema will list candidates even when an explicit selector wins, with 
 - `~user` is not supported.
 - A relative explicit config selector is relative to PWD.
 - A relative source or output argument is relative to PWD.
-- A relative path stored inside `bakedocs.toml`, including a font, stylesheet, or Pandoc template, is relative to that config file's directory. Paths inside `brand.yml` are relative to the brand directory.
+- A relative path stored inside `bakedocs.toml`, including a font, stylesheet, or Pandoc template, is relative to that config file's directory. Relative paths inside `brand.yml` are relative to the brand directory.
 - Diagnostic output retains the useful selected spelling and also supplies a normalised absolute path in JSON. It does not require the target to be canonicalisable before reporting an error.
 
-The config-relative rule is deliberate: `brand/logo.svg` must continue to work when a self-contained project or user brand directory is invoked from another PWD.
+The config-relative rule is deliberate: `brand/logo.svg` must continue to work when a project or user brand directory is invoked from another PWD. A logo may instead use an absolute path, `~/`, a symlink that resolves outside the profile, a remote HTTP(S) URL, a protocol-relative URL, or a data URL. Local logo paths must resolve to readable regular files no larger than 10 MiB. This logo flexibility does not relax the profile-containment requirement for font contracts. Users are responsible for determining whether they may use and redistribute their configured logos.
 
 ## Configuration model
 

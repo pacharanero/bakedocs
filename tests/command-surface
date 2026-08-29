@@ -98,6 +98,30 @@ assert_contains '<html lang="en-GB">' "$html_output"
 assert_contains '#123456' "$html_output"
 assert_contains 'data:image/svg+xml' "$html_output"
 
+external_logo="$temp_dir/external-logo.svg"
+cp "$brand_root/test/assets/logo.svg" "$external_logo"
+logo_brand_root="$temp_dir/logo-brands"
+mkdir -p "$logo_brand_root/absolute/assets" "$logo_brand_root/home-relative/assets" "$logo_brand_root/symlink/assets"
+cp "$brand_root/test/tokens.css" "$logo_brand_root/absolute/tokens.css"
+cp "$brand_root/test/tokens.css" "$logo_brand_root/home-relative/tokens.css"
+cp "$brand_root/test/tokens.css" "$logo_brand_root/symlink/tokens.css"
+cp "$external_logo" "$logo_brand_root/absolute/assets/logo.svg"
+cp "$external_logo" "$logo_brand_root/home-relative/assets/logo.svg"
+printf 'brand-name: "Absolute Logo"\nlogo: "%s"\n' "$external_logo" > "$logo_brand_root/absolute/brand.yml"
+printf 'brand-name: "Home-relative Logo"\nlogo: "~/external-logo.svg"\n' > "$logo_brand_root/home-relative/brand.yml"
+printf 'brand-name: "Symlinked Logo"\nlogo: "assets/logo.svg"\n' > "$logo_brand_root/symlink/brand.yml"
+cp "$external_logo" "$config_home/external-logo.svg"
+ln -s "$external_logo" "$logo_brand_root/symlink/assets/logo.svg"
+"$root/bakedocs" html "$work_dir/report source.md" absolute --brands-dir "$logo_brand_root" \
+  --offline --output "$temp_dir/absolute-logo.html" > /dev/null
+env HOME="$config_home" "$root/bakedocs" html "$work_dir/report source.md" home-relative --brands-dir "$logo_brand_root" \
+  --offline --output "$temp_dir/home-relative-logo.html" > /dev/null
+"$root/bakedocs" html "$work_dir/report source.md" symlink --brands-dir "$logo_brand_root" \
+  --offline --output "$temp_dir/symlink-logo.html" > /dev/null
+assert_contains 'data:image/svg+xml;base64,' "$temp_dir/absolute-logo.html"
+assert_contains 'data:image/svg+xml;base64,' "$temp_dir/home-relative-logo.html"
+assert_contains 'data:image/svg+xml;base64,' "$temp_dir/symlink-logo.html"
+
 values_one="$work_dir/values one.yml"
 cat > "$values_one" <<'EOF'
 provider:

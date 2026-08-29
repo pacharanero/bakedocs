@@ -126,7 +126,7 @@ The full rendering conformance suite also requires Poppler's `pdfinfo`, `pdffont
 
 ## Brand Layout
 
-Each `BRAND-ID` selects a self-contained profile directory. User profiles normally live under the XDG configuration directory:
+Each `BRAND-ID` selects a profile directory. User profiles normally live under the XDG configuration directory:
 
 ```text
 ~/.config/bakedocs/brands/
@@ -135,12 +135,12 @@ Each `BRAND-ID` selects a self-contained profile directory. User profiles normal
     |-- tokens.css
     |-- document.css       # optional override
     |-- reveal.css         # optional override
-    `-- assets/            # only when redistribution is permitted
+    `-- assets/            # optional profile-local assets
 ```
 
 `tokens.css` deliberately contains only semantic custom properties such as `--brand-primary` and `--brand-heading-font`. The name distinguishes those reusable brand values from `document.css` and `reveal.css`, which contain layout selectors; `brand.css` would suggest that one file owns both concerns.
 
-Relative paths inside `brand.yml` resolve against the brand directory, not the caller's PWD. This allows `bakedocs` to be invoked from anywhere while keeping each profile portable.
+Logo paths inside `brand.yml` may be profile-relative, absolute, home-relative with `~/`, symlinked, or remote URLs. Relative paths resolve against the brand directory, not the caller's PWD, so portable profiles continue to work when `bakedocs` is invoked from anywhere. Local logos must resolve to readable regular files no larger than 10 MiB. Users are responsible for deciding whether they may use or redistribute a selected logo.
 
 Local fonts are optional but fail closed once any field for a role is declared. A heading or body role requires top-level quoted scalar fields for `heading-font-family`, `heading-font-file`, `heading-font-weight`, `heading-font-style`, and `heading-font-pdf-name` (or the equivalent `body-*` fields). Supported files are profile-contained WOFF2, WOFF, TTF, and OTF files up to 10 MiB each; absolute paths, traversal, and escaping symlinks are rejected. `bakedocs` embeds configured files as data URIs in HTML and slides, overrides the corresponding semantic font token, and uses the expected PostScript `*-font-pdf-name` to require an embedded font with a Unicode map before publishing a Chromium PDF. Additional PDF fonts are reported as possible partial glyph fallback for review because Poppler cannot attribute each glyph to a semantic role. `bakedocs check` validates the files and reports whether PDF font verification is available.
 

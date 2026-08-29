@@ -15,7 +15,7 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 ## Current State
 
 - The top-level `bakedocs` executable implements the initial Bash command surface against arbitrary source files.
-- Brand profiles use self-contained `brands/<brand-id>/` directories discovered from project or XDG configuration roots.
+- Brand profiles use `brands/<brand-id>/` directories discovered from project or XDG configuration roots.
 - Pandoc plus Chromium is the accepted PDF baseline. The generated PDFs were visually approved.
 - WeasyPrint and Vivliostyle are deferred candidates, not required dependencies.
 - `templates/reveal.html` is intentional. Pandoc 3.10.2's stock Reveal template uses pre-6 plugin paths; Reveal.js 6 requires the explicit `dist/plugin/*.mjs` imports used here.
@@ -30,7 +30,7 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 - Metadata interpolation remains a strict scalar lookup over parsed Pandoc content. Do not grow it into a general template language or reparse resolved values as Markdown.
 - Metadata cannot supply images, raw content, CSS, includes, logos, or renderer URLs; those resource-bearing controls remain trusted runtime or selected-profile inputs.
 - Offline document rendering rejects remote image resources; slides remain unavailable offline while Reveal.js uses its pinned CDN.
-- `BRAND-ID` identifies a brand directory; profile-relative asset paths resolve against that directory, never the caller's PWD.
+- `BRAND-ID` identifies a brand directory; relative logo paths resolve against that directory, never the caller's PWD, while logos may also use absolute, home-relative, symlinked, or remote locations.
 - Invocation must work from any directory once `bakedocs` is installed on `$PATH`, including through a symlink.
 - The common PDF path remains Pandoc plus Chromium until a real requirement proves it insufficient.
 - Do not add Rust, Python, Node, WeasyPrint, Vivliostyle, or another runtime merely to make the project look more complete. Admit complexity in response to evidence.
