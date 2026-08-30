@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v<version> tag to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Validate release tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$(git cat-file -t "refs/tags/$TAG")" == tag ]]
+          git merge-base --is-ancestor "$(git rev-list -n 1 "$TAG")" origin/main
+        env:
+          TAG: ${{ inputs.tag }}
+      - name: Install Pandoc
+        uses: pandoc/actions/setup@86321b6dd4675f5014c611e05088e10d4939e09e # v1.1.1
+        with:
+          version: 3.10.2
+      - name: Install PDF inspection tools
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends poppler-utils
+      - name: Validate release
+        run: s/lint && s/test
+        env:
+          BAKEDOCS_CHROMIUM: google-chrome
+      - name: Package release
+        run: s/package-release --tag "$TAG" --output dist
+        env:
+          TAG: ${{ inputs.tag }}
+      - name: Publish GitHub release
+        run: gh release create "$TAG" dist/install.sh dist/bakedocs-*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}

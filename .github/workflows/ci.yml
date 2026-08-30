@@ -45,6 +45,30 @@ jobs:
           persist-credentials: false
       - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
 
+  bootstrap-portability:
+    name: Bootstrap portability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install supported Bash on macOS
+        if: runner.os == 'macOS'
+        run: brew install bash
+      - name: Test release bootstrap
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            export PATH="$(brew --prefix)/bin:$PATH"
+          fi
+          exec bash tests/release-installation
+
   workflow-security:
     name: GitHub Actions security
     runs-on: ubuntu-latest

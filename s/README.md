@@ -6,9 +6,15 @@ The `s/` directory contains the canonical convenience scripts for developing and
 
 Installs this checkout under `$HOME/.local` by default. Use `s/install --prefix <path>` for another prefix. Rerun the same command to atomically switch to a complete new payload.
 
+The public `install.sh` bootstrap performs the equivalent operation from a GitHub Release after verifying its versioned archive against the release's `SHA256SUMS`. It never invokes a package manager or `sudo`.
+
 ## `s/uninstall`
 
 Removes only an installation managed by `s/install`. Use the same `--prefix` value supplied at installation time.
+
+## `s/package-release`
+
+Creates a deterministic `bakedocs-<version>.tar.gz`, a copy of the public bootstrap installer, and `SHA256SUMS`. `--tag v<version>` makes release automation fail if the Git tag and command version differ.
 
 ## `s/check-tools`
 
@@ -20,7 +26,7 @@ Checks the syntax of the public command, project scripts, and integration tests.
 
 ## `s/test`
 
-Parses all maintained Markdown through Pandoc's native writer, runs the isolated command-surface and installation suites, then renders the maintained fixtures through real Chromium and inspects the resulting HTML, Reveal.js, and PDF structures. Rendering conformance requires Poppler's `pdfinfo`, `pdffonts`, and `pdftotext` utilities.
+Parses all maintained Markdown through Pandoc's native writer, runs the isolated command-surface, checkout-installation, release-bootstrap, and real-rendering suites, then inspects the resulting HTML, Reveal.js, and PDF structures. Rendering conformance requires Poppler's `pdfinfo`, `pdffonts`, and `pdftotext` utilities.
 
 ## `s/render`
 

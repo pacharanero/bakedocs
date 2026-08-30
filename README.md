@@ -7,15 +7,12 @@ Turn Markdown into branded PDF, standalone HTML, and Reveal.js presentations.
 
 ## Quick Start
 
-Prerequisites: Bash 4.0 or later, Pandoc 3.7.1 or later, and a Chromium-based browser. `bakedocs` auto-detects `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable`; set `BAKEDOCS_CHROMIUM=/path/to/browser` when the executable has another name or location. Profiles that declare a font contract also require Poppler's `pdffonts` for verified PDF output; HTML and slides need only the standard `base64` and `tr` utilities to embed those fonts.
+Runtime prerequisites: Bash 4.0 or later, Pandoc 3.7.1 or later, and a Chromium-based browser. `bakedocs` auto-detects `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable`; set `BAKEDOCS_CHROMIUM=/path/to/browser` when the executable has another name or location. Profiles that declare a font contract also require Poppler's `pdffonts` for verified PDF output; HTML and slides need only the standard `base64` and `tr` utilities to embed those fonts.
 
 ```console
-git clone https://github.com/pacharanero/bakedocs.git
-cd bakedocs
-./s/install
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pacharanero/bakedocs/releases/latest/download/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
-bakedocs check --brands-dir examples/brands
-bakedocs pdf fixtures/document.md example --brands-dir examples/brands --output example.pdf
+bakedocs check
 ```
 
 The command prints only the generated path on success. Generated output under `out/` is ignored by Git.
@@ -34,9 +31,24 @@ The bakeoff produced visually approved PDFs and presentations across representat
 
 ## Installation
 
-`./s/install` installs a complete versioned runtime payload under `$HOME/.local/lib/bakedocs/` and atomically links `$HOME/.local/bin/bakedocs` to it. Rerun it after updating the checkout. Use `./s/install --prefix <path>` for another prefix and ensure that prefix's `bin/` directory is on `PATH`.
+The release bootstrap supports Linux and macOS. It discovers the latest GitHub Release, downloads its versioned runtime archive and `SHA256SUMS` over HTTPS, verifies the archive, rejects unsafe or oversized archive entries, and delegates installation to the same guarded installer used by a checkout. It never invokes `sudo`, a package manager, or a mutable branch archive. Native Windows is not supported; use WSL. Checksums detect corruption and release-asset mismatch; authenticity still depends on HTTPS and the security of the GitHub repository and its manually approved `release` environment.
 
-Remove a managed installation with `./s/uninstall`, passing the same `--prefix` when applicable. The uninstaller refuses unrelated files and leaves other prefix contents untouched. A release-backed copy-and-paste installer that can bootstrap compatible Pandoc and Chromium versions is tracked separately; the checkout installer deliberately does not invoke a package manager or `sudo`.
+Pin a release or choose another user prefix by downloading the installer first:
+
+```console
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pacharanero/bakedocs/releases/latest/download/install.sh -o /tmp/bakedocs-install.sh
+BAKEDOCS_VERSION=0.1.0 bash /tmp/bakedocs-install.sh --prefix "$HOME/.local"
+```
+
+The bootstrap reports supported installation routes for Pandoc, Chromium, Poppler, and macOS Bash without executing them. Linux users are directed to Pandoc's official packages because a distribution package must not be assumed to satisfy the Pandoc 3.7.1 minimum.
+
+Remove a release installation with the same verified bootstrap and prefix:
+
+```console
+bash /tmp/bakedocs-install.sh --version 0.1.0 --uninstall
+```
+
+For checkout development, `./s/install` installs a complete versioned runtime payload under `$HOME/.local/lib/bakedocs/` and atomically links `$HOME/.local/bin/bakedocs` to it. Rerun it after updating the checkout. Use `./s/install --prefix <path>` for another prefix. `./s/uninstall` removes a checkout installation. Both refuse unrelated files and leave other prefix contents untouched.
 
 The current command surface is:
 
@@ -156,10 +168,10 @@ Review each font's provenance and redistribution terms before adding it to a pro
 - `templates/` contains explicit Pandoc HTML and Reveal.js 6 templates.
 - `out/` contains ignored generated bakeoff output; regenerate it rather than editing or committing it.
 - `s/` contains the current reproducible bakeoff commands.
-- `tests/` contains isolated command-surface, installation, and real-rendering conformance tests.
+- `tests/` contains isolated command-surface, checkout-installation, release-bootstrap, and real-rendering conformance tests.
 - `findings.md` records measured results and renderer conclusions.
 - `spec/` contains the product and implementation contract and its reading order.
-- `roadmap.md` records the immediate handoff and implementation sequence.
+- `spec/roadmap.md` records the immediate handoff and implementation sequence.
 
 ## Renderer decision
 

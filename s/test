@@ -26,4 +26,5 @@ pandoc "${markdown_files[@]}" \
 
 tests/command-surface
 tests/installation
+tests/release-installation
 tests/rendering-conformance

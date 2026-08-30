@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output_dir="$root/dist"
+tag=""
+temp_dir=""
+
+usage() {
+  cat <<'EOF'
+Usage: s/package-release [--tag <vVERSION>] [--output <PATH>]
+
+Create a deterministic release archive, bootstrap installer, and SHA256SUMS.
+EOF
+}
+
+fail() {
+  printf 'bakedocs packager: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+cleanup() {
+  [[ -z "$temp_dir" || ! -d "$temp_dir" ]] || rm -rf "$temp_dir"
+}
+
+sha256_line() {
+  local file="$1"
+  local output
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    output="$(sha256sum "$file")"
+  elif command -v shasum >/dev/null 2>&1; then
+    output="$(shasum -a 256 "$file")"
+  else
+    fail 'sha256sum or shasum is required to package a release'
+  fi
+  printf '%s  %s\n' "${output%%[[:space:]]*}" "${file##*/}"
+}
+
+while (($#)); do
+  case "$1" in
+    --tag)
+      (($# >= 2)) || fail '--tag requires a value' 2
+      tag="$2"
+      shift 2
+      ;;
+    --tag=*)
+      tag="${1#*=}"
+      [[ -n "$tag" ]] || fail '--tag requires a non-empty value' 2
+      shift
+      ;;
+    --output)
+      (($# >= 2)) || fail '--output requires a path' 2
+      output_dir="$2"
+      [[ -n "$output_dir" ]] || fail '--output requires a non-empty path' 2
+      shift 2
+      ;;
+    --output=*)
+      output_dir="${1#*=}"
+      [[ -n "$output_dir" ]] || fail '--output requires a non-empty path' 2
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) fail "unknown option: $1" 2 ;;
+  esac
+done
+
+version="$("$root/bakedocs" version)"
+version="${version#bakedocs }"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || fail "bakedocs reports an invalid release version: $version"
+if [[ -n "$tag" ]]; then
+  [[ "$tag" == "v$version" ]] || fail "tag $tag does not match bakedocs version $version"
+fi
+
+if [[ "$output_dir" != /* ]]; then
+  output_dir="$PWD/$output_dir"
+fi
+[[ ! "$output_dir" =~ [[:cntrl:]] ]] || fail 'output path contains control characters' 2
+mkdir -p "$output_dir"
+[[ -d "$output_dir" && ! -L "$output_dir" ]] || fail "output is not a regular directory: $output_dir"
+
+package_name="bakedocs-$version"
+archive="$output_dir/$package_name.tar.gz"
+installer="$output_dir/install.sh"
+checksums="$output_dir/SHA256SUMS"
+for output in "$archive" "$installer" "$checksums"; do
+  [[ ! -e "$output" && ! -L "$output" ]] || fail "refusing to replace existing release output: $output"
+done
+
+required_files=(
+  bakedocs
+  LICENSE
+  filters/metadata-interpolation.lua
+  filters/resources.lua
+  styles/document.css
+  styles/reveal.css
+  templates/document.html
+  templates/reveal.html
+  s/install
+  s/uninstall
+)
+for required_file in "${required_files[@]}"; do
+  [[ -f "$root/$required_file" && -r "$root/$required_file" ]] || fail "release payload is missing: $required_file"
+done
+[[ -x "$root/bakedocs" && -x "$root/s/install" && -x "$root/s/uninstall" && -x "$root/install.sh" ]] || fail 'release scripts are not executable'
+command -v git >/dev/null 2>&1 || fail 'git is required to create a deterministic release archive'
+
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-package.XXXXXXXX")"
+trap cleanup EXIT
+stage="$temp_dir/$package_name"
+mkdir -p "$stage/filters" "$stage/styles" "$stage/templates" "$stage/s"
+install -m 0755 "$root/bakedocs" "$stage/bakedocs"
+install -m 0644 "$root/LICENSE" "$stage/LICENSE"
+install -m 0644 "$root/filters/metadata-interpolation.lua" "$stage/filters/metadata-interpolation.lua"
+install -m 0644 "$root/filters/resources.lua" "$stage/filters/resources.lua"
+install -m 0644 "$root/styles/document.css" "$stage/styles/document.css"
+install -m 0644 "$root/styles/reveal.css" "$stage/styles/reveal.css"
+install -m 0644 "$root/templates/document.html" "$stage/templates/document.html"
+install -m 0644 "$root/templates/reveal.html" "$stage/templates/reveal.html"
+install -m 0755 "$root/s/install" "$stage/s/install"
+install -m 0755 "$root/s/uninstall" "$stage/s/uninstall"
+
+git -C "$stage" init --quiet
+git -C "$stage" add .
+tree="$(git -C "$stage" write-tree)"
+commit="$(
+  GIT_AUTHOR_NAME=bakedocs GIT_AUTHOR_EMAIL=bakedocs@invalid \
+    GIT_COMMITTER_NAME=bakedocs GIT_COMMITTER_EMAIL=bakedocs@invalid \
+    GIT_AUTHOR_DATE='1970-01-01T00:00:00Z' GIT_COMMITTER_DATE='1970-01-01T00:00:00Z' \
+    git -C "$stage" commit-tree "$tree" <<'EOF'
+bakedocs release payload
+EOF
+)"
+git -C "$stage" -c tar.umask=0022 archive --format=tar --prefix="$package_name/" "$commit" | gzip -n > "$archive"
+install -m 0755 "$root/install.sh" "$installer"
+{
+  sha256_line "$archive"
+  sha256_line "$installer"
+} > "$checksums"
+
+printf '%s\n' "$archive" "$installer" "$checksums"

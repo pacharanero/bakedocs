@@ -8,7 +8,7 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 
 - [README.md](README.md) - project purpose, current commands, renderer decision, and brand-profile layout.
 - [spec/README.md](spec/README.md) - product specification index and reading order.
-- [roadmap.md](roadmap.md) - sequenced work with stable item IDs.
+- [spec/roadmap.md](spec/roadmap.md) - sequenced work with stable item IDs.
 - [findings.md](findings.md) - measured bakeoff evidence and discovered compatibility constraints.
 - [pacharanero/house-style](https://github.com/pacharanero/house-style/blob/main/AGENTS.md) - adopted cross-repository engineering standards.
 
@@ -40,7 +40,7 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 
 ## Immediate Direction
 
-Continue hardening the smallest useful Bash CLI described by [R4](roadmap.md):
+Continue hardening the smallest useful Bash CLI described by [R4](spec/roadmap.md):
 
 ```console
 bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
@@ -56,10 +56,11 @@ Prefer a single readable executable until functions are genuinely reusable. Keep
 
 - `s/check-tools` - report which evaluated renderers are available.
 - `s/install` / `s/uninstall` - install or remove a guarded user-prefix runtime payload.
+- `s/package-release` - create the deterministic versioned archive, bootstrap installer, and checksums consumed by manually approved tagged release automation.
 - `s/render [brand]` - render the synthetic document and deck through the fictional example profile or `BAKEDOCS_BRANDS_DIR`.
 - `s/render-all` - regenerate outputs for every profile in the selected root.
 - `s/lint` - check every executable shell script's syntax.
-- `s/test` - parse maintained Markdown and run command-surface, installation, and real-rendering conformance tests; the latter requires Chromium and Poppler utilities.
+- `s/test` - parse maintained Markdown and run command-surface, checkout-installation, release-bootstrap, and real-rendering conformance tests; the latter requires Chromium and Poppler utilities.
 
 For presentation changes, serve the repository over HTTP and inspect every stable slide at 1280 x 720 and phone landscape. For print changes, inspect every page produced by the example profile and at least the cover for any additional test profile; successful process exit is not visual proof.
 

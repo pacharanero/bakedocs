@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-release-test.XXXXXXXX")"
+temp_dir="$(cd "$temp_dir" && pwd -P)"
+trap 'rm -rf "$temp_dir"' EXIT
+
+fail() {
+  printf 'release installation test failed: %s\n' "$1" >&2
+  exit 1
+}
+
+sha256_file() {
+  local output
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    output="$(sha256sum "$1")"
+  elif command -v shasum >/dev/null 2>&1; then
+    output="$(shasum -a 256 "$1")"
+  else
+    fail 'sha256sum or shasum is required for release tests'
+  fi
+  printf '%s\n' "${output%%[[:space:]]*}"
+}
+
+verify_checksums() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum --check SHA256SUMS > /dev/null
+  else
+    shasum -a 256 --check SHA256SUMS > /dev/null
+  fi
+}
+
+version="$("$root/bakedocs" version)"
+version="${version#bakedocs }"
+dist="$temp_dir/dist"
+"$root/s/package-release" --output "$dist" > "$temp_dir/package-output.txt"
+archive_name="bakedocs-$version.tar.gz"
+[[ -s "$dist/$archive_name" && -x "$dist/install.sh" && -s "$dist/SHA256SUMS" ]] || fail 'release output is incomplete'
+(cd "$dist" && verify_checksums) || fail 'release checksums do not verify'
+second_dist="$temp_dir/second-dist"
+(sleep 2; umask 077; GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tar.umask GIT_CONFIG_VALUE_0=0077 \
+  "$root/s/package-release" --output "$second_dist" > /dev/null)
+cmp "$dist/$archive_name" "$second_dist/$archive_name" > /dev/null || fail 'release archive is not deterministic'
+if "$root/s/package-release" --tag v9.9.9 --output "$temp_dir/wrong-tag" > /dev/null 2> "$temp_dir/tag-error.txt"; then
+  fail 'packager accepted a tag that does not match the command version'
+fi
+grep -Fq 'does not match bakedocs version' "$temp_dir/tag-error.txt" || fail 'tag mismatch error was not reported'
+
+release_root="$temp_dir/releases/download/v$version"
+mkdir -p "$release_root"
+cp "$dist/$archive_name" "$dist/SHA256SUMS" "$release_root/"
+prefix="$temp_dir/prefix"
+common_env=(
+  BAKEDOCS_VERSION="$version"
+  BAKEDOCS_RELEASE_BASE_URL="file://$temp_dir/releases/download"
+  BAKEDOCS_ALLOW_FILE_URLS=1
+  BAKEDOCS_PLATFORM=linux
+  HOME="$temp_dir/home"
+)
+env "${common_env[@]}" "$dist/install.sh" --prefix "$prefix" \
+  > "$temp_dir/install-output.txt" 2> "$temp_dir/install-diagnostics.txt"
+entry="$prefix/bin/bakedocs"
+[[ -L "$entry" ]] || fail 'bootstrap did not install the command symlink'
+[[ "$("$entry" version)" == "bakedocs $version" ]] || fail 'bootstrap installed the wrong version'
+grep -Fq 'Pandoc 3.7.1+' "$temp_dir/install-diagnostics.txt" || fail 'Pandoc installation route was not reported'
+grep -Fq 'apt install chromium' "$temp_dir/install-diagnostics.txt" || fail 'Chromium installation route was not reported'
+grep -Fq 'apt install poppler-utils' "$temp_dir/install-diagnostics.txt" || fail 'Poppler installation route was not reported'
+
+macos_prefix="$temp_dir/macos-prefix"
+env "${common_env[@]}" BAKEDOCS_PLATFORM=macos "$dist/install.sh" --prefix "$macos_prefix" \
+  > /dev/null 2> "$temp_dir/macos-diagnostics.txt"
+grep -Fq 'brew install pandoc' "$temp_dir/macos-diagnostics.txt" || fail 'macOS Pandoc installation route was not reported'
+grep -Fq 'brew install --cask chromium' "$temp_dir/macos-diagnostics.txt" || fail 'macOS Chromium installation route was not reported'
+grep -Fq 'brew install poppler' "$temp_dir/macos-diagnostics.txt" || fail 'macOS Poppler installation route was not reported'
+env "${common_env[@]}" BAKEDOCS_PLATFORM=macos "$dist/install.sh" --prefix "$macos_prefix" --uninstall > /dev/null
+
+target_before="$(readlink "$entry")"
+cp "$release_root/$archive_name" "$temp_dir/good-archive.tar.gz"
+printf 'tampered\n' >> "$release_root/$archive_name"
+if env "${common_env[@]}" "$dist/install.sh" --prefix "$prefix" \
+  > /dev/null 2> "$temp_dir/tamper-error.txt"; then
+  fail 'bootstrap accepted a tampered release archive'
+fi
+grep -Fq 'checksum verification failed' "$temp_dir/tamper-error.txt" || fail 'tampered archive error was not reported'
+[[ "$(readlink "$entry")" == "$target_before" ]] || fail 'failed verification changed the active installation'
+mv "$temp_dir/good-archive.tar.gz" "$release_root/$archive_name"
+cp "$dist/SHA256SUMS" "$release_root/SHA256SUMS"
+
+malicious_parent="$temp_dir/malicious"
+mkdir -p "$malicious_parent/bakedocs-$version"
+ln -s /etc/passwd "$malicious_parent/bakedocs-$version/bakedocs"
+tar -czf "$release_root/$archive_name" -C "$malicious_parent" "bakedocs-$version"
+checksum="$(sha256_file "$release_root/$archive_name")"
+printf '%s  %s\n' "$checksum" "$archive_name" > "$release_root/SHA256SUMS"
+if env "${common_env[@]}" "$dist/install.sh" --prefix "$prefix" \
+  > /dev/null 2> "$temp_dir/archive-error.txt"; then
+  fail 'bootstrap accepted a checksum-valid archive containing a symlink'
+fi
+grep -Fq 'non-file entry' "$temp_dir/archive-error.txt" || fail 'unsafe archive type error was not reported'
+[[ "$(readlink "$entry")" == "$target_before" ]] || fail 'unsafe archive changed the active installation'
+cp "$dist/$archive_name" "$dist/SHA256SUMS" "$release_root/"
+
+cp "$release_root/SHA256SUMS" "$temp_dir/duplicate-SHA256SUMS"
+grep -F "$archive_name" "$temp_dir/duplicate-SHA256SUMS" >> "$release_root/SHA256SUMS"
+if env "${common_env[@]}" "$dist/install.sh" --prefix "$prefix" \
+  > /dev/null 2> "$temp_dir/checksum-entry-error.txt"; then
+  fail 'bootstrap accepted duplicate archive checksum entries'
+fi
+grep -Fq 'exactly one entry' "$temp_dir/checksum-entry-error.txt" || fail 'duplicate checksum error was not reported'
+mv "$temp_dir/duplicate-SHA256SUMS" "$release_root/SHA256SUMS"
+
+if BAKEDOCS_VERSION="$version" BAKEDOCS_RELEASE_BASE_URL='http://example.test/releases' \
+  BAKEDOCS_PLATFORM=linux "$dist/install.sh" > /dev/null 2> "$temp_dir/http-error.txt"; then
+  fail 'bootstrap accepted an HTTP release URL'
+fi
+grep -Fq 'release URL must use HTTPS' "$temp_dir/http-error.txt" || fail 'HTTP release error was not reported'
+
+env "${common_env[@]}" "$dist/install.sh" --prefix "$prefix" --uninstall > /dev/null
+[[ ! -e "$entry" && ! -L "$entry" ]] || fail 'release bootstrap uninstall left the command behind'
+[[ ! -e "$prefix/lib/bakedocs" ]] || fail 'release bootstrap uninstall left the payload behind'
+
+if BAKEDOCS_VERSION='not a version' "$dist/install.sh" > /dev/null 2> "$temp_dir/version-error.txt"; then
+  fail 'bootstrap accepted an invalid version'
+fi
+grep -Fq 'invalid release version' "$temp_dir/version-error.txt" || fail 'invalid version error was not reported'
+
+printf 'Release installation tests passed\n'

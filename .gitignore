@@ -1,5 +1,6 @@
 # Generated render output
 /out/
+/dist/
 
 # Local-only private workspace
 /.private
