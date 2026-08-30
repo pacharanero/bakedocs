@@ -70,8 +70,8 @@ EOF
 
 "$root/bakedocs" > "$temp_dir/help.txt"
 assert_contains 'bakedocs pdf <SOURCE> <BRAND-ID>' "$temp_dir/help.txt"
-assert_equal 'bakedocs 0.1.0-dev' "$("$root/bakedocs" --version)" '--version output'
-assert_equal 'bakedocs 0.1.0-dev' "$("$root/bakedocs" version)" 'version command output'
+assert_equal 'bakedocs 0.1.0' "$("$root/bakedocs" --version)" '--version output'
+assert_equal 'bakedocs 0.1.0' "$("$root/bakedocs" version)" 'version command output'
 assert_equal 'test' "$("$root/bakedocs" brands list --brands-dir "$brand_root")" 'explicit brand list'
 "$root/bakedocs" brands show test --brands-dir "$brand_root" > "$temp_dir/brand.txt"
 assert_contains 'brand-name: "Test Organisation"' "$temp_dir/brand.txt"
