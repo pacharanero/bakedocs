@@ -17,7 +17,12 @@ export BW_SESSION=FAKE_SESSION_ONLY
 export BW_TEST_ROOT="$temp_dir"
 export BW_TEST_MODE=ok
 export BW_TEST_PANDOC="$(command -v pandoc)"
-export BW_TEST_CHROMIUM="$(command -v chromium || command -v chromium-browser || command -v google-chrome)"
+if [[ -n "${BAKEDOCS_CHROMIUM:-}" ]]; then
+  BW_TEST_CHROMIUM="$(command -v "$BAKEDOCS_CHROMIUM")" || fail 'configured Chromium is unavailable'
+else
+  BW_TEST_CHROMIUM="$(command -v chromium || command -v chromium-browser || command -v google-chrome || command -v google-chrome-stable)" || fail 'Chromium is unavailable'
+fi
+export BW_TEST_CHROMIUM
 
 cat > "$temp_dir/bin/bw" <<'EOF'
 #!/usr/bin/env bash
