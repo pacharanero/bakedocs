@@ -97,6 +97,7 @@ required_files=(
   bakedocs
   LICENSE
   filters/metadata-interpolation.lua
+  filters/bitwarden.lua
   filters/resources.lua
   styles/document.css
   styles/reveal.css
@@ -118,6 +119,7 @@ mkdir -p "$stage/filters" "$stage/styles" "$stage/templates" "$stage/s"
 install -m 0755 "$root/bakedocs" "$stage/bakedocs"
 install -m 0644 "$root/LICENSE" "$stage/LICENSE"
 install -m 0644 "$root/filters/metadata-interpolation.lua" "$stage/filters/metadata-interpolation.lua"
+install -m 0644 "$root/filters/bitwarden.lua" "$stage/filters/bitwarden.lua"
 install -m 0644 "$root/filters/resources.lua" "$stage/filters/resources.lua"
 install -m 0644 "$root/styles/document.css" "$stage/styles/document.css"
 install -m 0644 "$root/styles/reveal.css" "$stage/styles/reveal.css"

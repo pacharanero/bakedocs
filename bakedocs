@@ -2,7 +2,12 @@
 # SPDX-FileCopyrightText: 2026 Marcus Baw
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+set +x
 set -euo pipefail
+# Keep the session only in this shell, and export it solely in the bw child.
+bw_session="${BW_SESSION:-}"
+export -n bw_session
+unset BW_SESSION BW_CLIENTSECRET BW_PASSWORD BITWARDENCLI_DEBUG
 
 readonly bakedocs_version="0.1.0"
 readonly revealjs_url="https://cdn.jsdelivr.net/npm/reveal.js@6.0.1"
@@ -21,6 +26,13 @@ output_option=""
 output_option_set=false
 values_options=()
 values_files=()
+layer_kinds=()
+bitwarden=false
+bitwarden_maps=()
+bitwarden_ids=()
+layers_json='[]'
+bw_executable=''
+bw_timeout=''
 offline=false
 temp_dir=""
 font_style=""
@@ -37,9 +49,9 @@ fail() {
 usage() {
   cat <<'EOF'
 Usage:
-  bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-  bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-  bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+  bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+  bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+  bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
   bakedocs brands list [--brands-dir <PATH>]
   bakedocs brands show <BRAND-ID> [--brands-dir <PATH>]
   bakedocs check [--brands-dir <PATH>]
@@ -48,6 +60,7 @@ Usage:
 Options:
       --brands-dir <PATH>  Use only this brand-profile root
       --values <PATH>      Add an ordered YAML or JSON metadata layer
+      --bitwarden <PATH>   Add an explicit Bitwarden custom-field mapping layer
       --output <PATH>      Write the rendered artefact to PATH
       --offline            Reject output that requires remote resources
   -h, --help               Print help
@@ -564,11 +577,13 @@ render_document_html() {
     --standalone
     --embed-resources
     --toc
-    --metadata-file="$brand_dir/brand.yml"
   )
-  for values_file in "${values_files[@]}"; do
-    pandoc_args+=(--metadata-file="$values_file")
-  done
+  if [[ "$bitwarden" == false ]]; then
+    pandoc_args+=(--metadata-file="$brand_dir/brand.yml")
+    for values_file in "${values_files[@]}"; do
+      pandoc_args+=(--metadata-file="$values_file")
+    done
+  fi
   pandoc_args+=(
     --template="$script_dir/templates/document.html"
     --resource-path="$source_dir:$brand_dir"
@@ -577,7 +592,9 @@ render_document_html() {
   )
   pandoc_args+=(--output="$target")
 
-  run_bounded pandoc env \
+  run_pandoc env \
+    BAKEDOCS_BITWARDEN="$bitwarden" \
+    BAKEDOCS_LAYERS="$layers_json" \
     BAKEDOCS_BRAND_LOGO="$brand_logo" \
     BAKEDOCS_DOCUMENT_HEADER="$style_header" \
     BAKEDOCS_EMBED_LOCAL_IMAGES=0 \
@@ -611,11 +628,13 @@ render_slides_html() {
     --to=revealjs
     --standalone
     --slide-level=2
-    --metadata-file="$brand_dir/brand.yml"
   )
-  for values_file in "${values_files[@]}"; do
-    pandoc_args+=(--metadata-file="$values_file")
-  done
+  if [[ "$bitwarden" == false ]]; then
+    pandoc_args+=(--metadata-file="$brand_dir/brand.yml")
+    for values_file in "${values_files[@]}"; do
+      pandoc_args+=(--metadata-file="$values_file")
+    done
+  fi
   pandoc_args+=(
     --template="$script_dir/templates/reveal.html"
     --resource-path="${source%/*}:$brand_dir"
@@ -625,7 +644,9 @@ render_slides_html() {
     --output="$target"
   )
 
-  run_bounded pandoc env \
+  run_pandoc env \
+    BAKEDOCS_BITWARDEN="$bitwarden" \
+    BAKEDOCS_LAYERS="$layers_json" \
     BAKEDOCS_BRAND_LOGO="$brand_logo" \
     BAKEDOCS_EMBED_LOCAL_IMAGES=1 \
     BAKEDOCS_OFFLINE=0 \
@@ -633,6 +654,32 @@ render_slides_html() {
     BAKEDOCS_REVEAL_HEADER="$style_header" \
     BAKEDOCS_REVEALJS_URL="$revealjs_url" \
     "$pandoc_executable" "${pandoc_args[@]}"
+}
+
+stream_bitwarden() {
+  local index
+  local pandoc_executable
+  local seconds=30
+  ((render_timeout >= seconds)) || seconds="$render_timeout"
+  pandoc_executable="$(find_pandoc)" || return
+  for ((index = 0; index < ${#bitwarden_maps[@]}; index++)); do
+    (
+      export BW_SESSION="$bw_session"
+      exec "$bw_timeout" --signal=TERM --kill-after=2 "$seconds" \
+        "$bw_executable" get item "${bitwarden_ids[index]}" --nointeraction < /dev/null
+    ) 2>/dev/null |
+      "$bw_timeout" --signal=TERM --kill-after=2 "$seconds" \
+        "$pandoc_executable" lua "$script_dir/filters/bitwarden.lua" select "${bitwarden_maps[index]}" \
+        2>/dev/null || return 1
+  done
+}
+
+run_pandoc() {
+  if [[ "$bitwarden" == true ]]; then
+    stream_bitwarden | run_bounded pandoc "$@" --fail-if-warnings
+  else
+    run_bounded pandoc "$@"
+  fi
 }
 
 render_pdf() {
@@ -712,6 +759,10 @@ render_command() {
   local values_input
   local values_path
   local values_absolute
+  local index
+  local plan
+  local render_status
+  local -a plan_args=()
 
   source_path="$(expand_path "$source_input")"
   source_absolute="$(absolute_path "$source_path")"
@@ -736,21 +787,47 @@ render_command() {
   [[ "$render_timeout" =~ ^[1-9][0-9]*$ ]] || fail 'BAKEDOCS_RENDER_TIMEOUT must be a positive integer' 2
 
   values_files=()
-  for values_input in "${values_options[@]}"; do
+  for ((index = 0; index < ${#values_options[@]}; index++)); do
+    values_input="${values_options[index]}"
     values_path="$(expand_path "$values_input")"
     values_absolute="$(absolute_path "$values_path")"
     [[ -f "$values_absolute" && -r "$values_absolute" ]] || fail "values input is not a readable file: $values_input" 2
     (($(wc -c < "$values_absolute") <= 1024 * 1024)) || fail "values input exceeds the 1 MiB limit: $values_input" 2
     values_files+=("$values_absolute")
+    plan_args+=("${layer_kinds[index]}" "$values_absolute")
+    if [[ "${layer_kinds[index]}" == bitwarden ]]; then bitwarden_maps+=("$values_absolute"); fi
   done
+
+  if [[ "$bitwarden" == true ]]; then
+    ((${#values_options[@]} <= 32)) || fail 'Bitwarden renders accept at most 32 values/mapping layers' 2
+    [[ -n "$bw_session" && ${#bw_session} -le 4096 ]] || fail 'Bitwarden requires an externally prepared BW_SESSION; bakedocs never logs in or unlocks' 2
+    bw_executable="$(type -P bw)" || fail 'the official bw executable is required on PATH for --bitwarden' 127
+    bw_timeout="$(type -P timeout || type -P gtimeout)" || fail '--bitwarden requires GNU timeout (or gtimeout on macOS)' 127
+    # Only public mapping paths and UUIDs are captured here, never vault data.
+    plan="$("$bw_timeout" --signal=TERM --kill-after=2 30 "$(find_pandoc)" lua \
+      "$script_dir/filters/bitwarden.lua" plan "$brand_dir/brand.yml" "${plan_args[@]}" 2>/dev/null)" || \
+      fail 'Bitwarden mapping validation failed' 2
+    layers_json="${plan%%$'\n'*}"
+    while IFS= read -r line; do bitwarden_ids+=("$line"); done <<< "${plan#*$'\n'}"
+    umask 077
+    ulimit -c 0
+  fi
 
   if [[ "$offline" == true ]]; then
     [[ "$kind" != slides ]] || fail 'slides require the pinned Reveal.js CDN and cannot be rendered with --offline' 2
     remote_profile_assets_present "$brand_dir" && fail 'remote brand assets are not permitted with --offline' 2
   fi
 
-  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs.XXXXXXXX")"
+  if [[ "$bitwarden" == true ]]; then
+    # Same-filesystem staging allows an atomic rename without a public copy.
+    temp_dir="$(mktemp -d "$output_parent/.bakedocs.XXXXXXXX")"
+  else
+    temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs.XXXXXXXX")"
+  fi
   trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   font_style="$temp_dir/brand-fonts.css"
   write_brand_font_css "$brand_dir" "$font_style"
   if [[ "$kind" == pdf ]]; then
@@ -760,13 +837,29 @@ render_command() {
   fi
   staged_output="$temp_dir/output.$staged_extension"
 
-  case "$kind" in
-    html) render_document_html "$source_absolute" "$brand_dir" "$staged_output" ;;
-    pdf) render_pdf "$source_absolute" "$brand_dir" "$staged_output" ;;
-    slides) render_slides_html "$source_absolute" "$brand_dir" "$staged_output" ;;
-  esac
+  # Do not capture sensitive renderer diagnostics, even to a private log. Keep
+  # errexit inside the subshell (an `if render...` would silently disable it).
+  set +e
+  (
+    set -e
+    if [[ "$bitwarden" == true ]]; then exec >/dev/null 2>&1; fi
+    case "$kind" in
+      html) render_document_html "$source_absolute" "$brand_dir" "$staged_output" ;;
+      pdf) render_pdf "$source_absolute" "$brand_dir" "$staged_output" ;;
+      slides) render_slides_html "$source_absolute" "$brand_dir" "$staged_output" ;;
+    esac
+  )
+  render_status=$?
+  set -e
+  if [[ "$render_status" -ne 0 ]]; then
+    if [[ "$bitwarden" == true ]]; then
+      fail 'protected render failed; check mapping, unlocked session, inputs, and renderer availability (tool diagnostics suppressed)' "$render_status"
+    fi
+    return "$render_status"
+  fi
 
   [[ -s "$staged_output" ]] || fail "$kind renderer did not produce a non-empty artefact" 1
+  if [[ "$bitwarden" == true ]]; then chmod 0600 "$staged_output"; fi
   mv "$staged_output" "$output_absolute"
   printf '%s\n' "$output_path"
 }
@@ -893,12 +986,30 @@ while (($#)); do
       (($# >= 2)) || fail '--values requires a path' 2
       [[ -n "$2" ]] || fail '--values requires a non-empty path' 2
       values_options+=("$2")
+      layer_kinds+=(values)
       shift 2
       ;;
     --values=*)
       values_path="${1#*=}"
       [[ -n "$values_path" ]] || fail '--values requires a non-empty path' 2
       values_options+=("$values_path")
+      layer_kinds+=(values)
+      shift
+      ;;
+    --bitwarden)
+      (($# >= 2)) || fail '--bitwarden requires a path' 2
+      [[ -n "$2" ]] || fail '--bitwarden requires a non-empty path' 2
+      values_options+=("$2")
+      layer_kinds+=(bitwarden)
+      bitwarden=true
+      shift 2
+      ;;
+    --bitwarden=*)
+      values_path="${1#*=}"
+      [[ -n "$values_path" ]] || fail '--bitwarden requires a non-empty path' 2
+      values_options+=("$values_path")
+      layer_kinds+=(bitwarden)
+      bitwarden=true
       shift
       ;;
     --offline)
@@ -942,7 +1053,7 @@ case "$command_name" in
     render_command "$command_name" "$2" "$3"
     ;;
   brands)
-    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, and --offline apply only to rendering commands' 2
+    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, --bitwarden, and --offline apply only to rendering commands' 2
     case "${2:-}" in
       list)
         (($# == 2)) || fail 'brands list takes no positional arguments' 2
@@ -962,7 +1073,7 @@ case "$command_name" in
     ;;
   check)
     (($# == 1)) || fail 'check takes no positional arguments' 2
-    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, and --offline apply only to rendering commands' 2
+    [[ "$output_option_set" == false && "$offline" == false && ${#values_options[@]} -eq 0 ]] || fail '--output, --values, --bitwarden, and --offline apply only to rendering commands' 2
     check_command
     ;;
   version)

@@ -201,6 +201,7 @@ while IFS= read -r entry || [[ -n "$entry" ]]; do
     "$package_root"/LICENSE|\
     "$package_root"/filters/|\
     "$package_root"/filters/metadata-interpolation.lua|\
+    "$package_root"/filters/bitwarden.lua|\
     "$package_root"/filters/resources.lua|\
     "$package_root"/s/|\
     "$package_root"/s/install|\

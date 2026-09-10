@@ -28,6 +28,8 @@ Checks the syntax of the public command, project scripts, and integration tests.
 
 Parses all maintained Markdown through Pandoc's native writer, runs the isolated command-surface, checkout-installation, release-bootstrap, and real-rendering suites, then inspects the resulting HTML, Reveal.js, and PDF structures. Rendering conformance requires Poppler's `pdfinfo`, `pdffonts`, and `pdftotext` utilities.
 
+Also runs `tests/bitwarden` with a synthetic `bw` on an isolated test path and home directory. It requires GNU `timeout` or `gtimeout`, tests protected rendering with real Pandoc/Chromium, and never requires a real vault or installed Bitwarden CLI.
+
 ## `s/render`
 
 Renders the synthetic document and slide fixtures through the public command surface. It uses the fictional `example` profile by default; set `BAKEDOCS_BRANDS_DIR` to exercise an external profile root.

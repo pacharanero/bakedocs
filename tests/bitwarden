@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcus Baw
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Isolated synthetic vault only. This suite never resolves the user's bw.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bakedocs="$root/bakedocs"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/bakedocs-bitwarden-test.XXXXXXXX")"
+trap 'rm -rf "$temp_dir"' EXIT
+fail() { printf 'Bitwarden test failed: %s\n' "$1" >&2; exit 1; }
+mode() { stat -c %a "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+mkdir -p "$temp_dir/bin" "$temp_dir/home"
+export HOME="$temp_dir/home"
+unset BW_SESSION BW_CLIENTID BW_CLIENTSECRET BW_PASSWORD BITWARDENCLI_APPDATA_DIR
+export BW_SESSION=FAKE_SESSION_ONLY
+export BW_TEST_ROOT="$temp_dir"
+export BW_TEST_MODE=ok
+export BW_TEST_PANDOC="$(command -v pandoc)"
+export BW_TEST_CHROMIUM="$(command -v chromium || command -v chromium-browser || command -v google-chrome)"
+
+cat > "$temp_dir/bin/bw" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${BW_SESSION:-}" == FAKE_SESSION_ONLY ]] || exit 81
+[[ "$#" == 4 && "$1" == get && "$2" == item && "$4" == --nointeraction ]] || exit 82
+[[ "$3" == 11111111-2222-3333-4444-555555555555 ]] || exit 83
+[[ ! -t 0 ]] || exit 84
+if IFS= read -r unexpected; then exit 84; fi
+printf '%s\n' "$*" >> "$BW_TEST_ROOT/calls"
+case "$BW_TEST_MODE" in
+  locked|missing) printf 'VAULT_DIAGNOSTIC_SECRET\n' >&2; exit 1 ;;
+  hang) trap '' TERM; sleep 20; exit 1 ;;
+  oversized) head -c 1048577 /dev/zero; exit ;;
+  malformed) printf '{"secret":"RAW_ITEM_SECRET"'; exit ;;
+  wrong-id) printf '{"id":"wrong","fields":[]}'; exit ;;
+  duplicate-json) printf '{"id":"wrong","id":"11111111-2222-3333-4444-555555555555","fields":[]}'; exit ;;
+  large-value)
+    printf '{"id":"%s","fields":[{"name":"account-name","type":0,"value":"' "$3"
+    head -c 65537 /dev/zero | tr '\0' a
+    printf '"}]}'
+    exit ;;
+  deep-json)
+    printf '{"unused":'
+    for ((i=0; i<33; i++)); do printf '['; done
+    printf '0'
+    for ((i=0; i<33; i++)); do printf ']'; done
+    printf '}'
+    exit ;;
+esac
+field='{"name":"account-name","type":1,"value":"SELECTED_SECRET <script> & {{literal}}"}'
+case "$BW_TEST_MODE" in
+  missing-field) field='{"name":"other","type":0,"value":"RAW_ITEM_SECRET"}' ;;
+  duplicate-field) field="$field,$field" ;;
+  linked) field='{"name":"account-name","type":3,"value":"RAW_ITEM_SECRET"}' ;;
+  null) field='{"name":"account-name","type":1,"value":null}' ;;
+  exact) field='{"name":"*Account*: O\u0027Brien","type":0,"value":"EXACT_SECRET"}' ;;
+esac
+printf '{"id":"%s","name":"RAW_ITEM_SECRET","login":{"password":"RAW_LOGIN_SECRET"},"fields":[%s,{"name":"unused","type":0,"value":"UNMAPPED_SECRET"}]}' "$3" "$field"
+[[ "$BW_TEST_MODE" != late-fail ]]
+EOF
+cat > "$temp_dir/bin/pandoc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -z "${BW_SESSION:-}" ]] || exit 85
+printf '%s\n' "$@" >> "$BW_TEST_ROOT/pandoc-argv"
+if [[ "${BW_TEST_MODE:-}" == pandoc-error && "$1" != lua ]]; then
+  printf 'SELECTED_SECRET parser diagnostic\n' >&2
+  printf 'SELECTED_SECRET unexpected stdout\n'
+  exit 1
+fi
+exec "$BW_TEST_PANDOC" "$@"
+EOF
+cat > "$temp_dir/bin/chromium" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -z "${BW_SESSION:-}" ]] || exit 86
+mode() { stat -c %a "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+printf '%s\n' "$@" >> "$BW_TEST_ROOT/chromium-argv"
+for value in "$@"; do
+  if [[ "$value" == file://* ]]; then
+    intermediate="${value#file://}"
+    [[ "$(mode "${intermediate%/*}")" == 700 ]] || exit 87
+    [[ "$(mode "$intermediate")" == 600 ]] || exit 88
+    if grep -R -E 'UNMAPPED_SECRET|RAW_ITEM_SECRET|RAW_LOGIN_SECRET|FAKE_SESSION_ONLY' "${intermediate%/*}"; then exit 89; fi
+  fi
+done
+if [[ "${BW_TEST_MODE:-}" == chromium-error ]]; then
+  printf 'SELECTED_SECRET browser diagnostic\n' >&2
+  exit 1
+fi
+exec "$BW_TEST_CHROMIUM" "$@"
+EOF
+chmod +x "$temp_dir/bin/"*
+export PATH="$temp_dir/bin:$PATH"
+export BAKEDOCS_PANDOC="$temp_dir/bin/pandoc"
+export BAKEDOCS_CHROMIUM="$temp_dir/bin/chromium"
+cat > "$temp_dir/map.yml" <<'EOF'
+bitwarden:
+  item-id: 11111111-2222-3333-4444-555555555555
+  fields:
+    provider.bank.account-name: account-name
+EOF
+cat > "$temp_dir/source.md" <<'EOF'
+---
+title: Public title
+---
+
+## Account
+
+{{ provider.bank.account-name }}
+EOF
+printf 'provider: {bank: {account-name: PUBLIC_OVERRIDE}}\n' > "$temp_dir/values.yml"
+render() {
+  "$bakedocs" "$1" "$temp_dir/source.md" example --brands-dir "$root/examples/brands" \
+    --output "$temp_dir/output" "${@:2}" > "$temp_dir/stdout" 2> "$temp_dir/stderr"
+}
+clean() {
+  if compgen -G "$temp_dir/.bakedocs.*" > /dev/null; then fail 'staging directory was retained'; fi
+  if grep -E 'SELECTED_SECRET|UNMAPPED_SECRET|RAW_ITEM_SECRET|RAW_LOGIN_SECRET|FAKE_SESSION_ONLY|VAULT_DIAGNOSTIC_SECRET' \
+    "$temp_dir/stdout" "$temp_dir/stderr" "$temp_dir/pandoc-argv" "${temp_dir}/calls"; then
+    fail 'sensitive data leaked to diagnostics or argv'
+  fi
+}
+reject() {
+  printf preserve > "$temp_dir/output"
+  if render html "$@"; then fail "unexpected success: $BW_TEST_MODE $*"; fi
+  [[ "$(< "$temp_dir/output")" == preserve ]] || fail 'failure replaced output'
+  clean
+}
+
+# No implicit provider discovery, even with a mapping in ordinary metadata.
+printf '%s\n' '---' 'title: Public' '---' 'Public body' > "$temp_dir/public.md"
+cp "$temp_dir/source.md" "$temp_dir/original.md"
+cp "$temp_dir/public.md" "$temp_dir/source.md"
+BAKEDOCS_BITWARDEN=true render html --values "$temp_dir/map.yml"
+[[ ! -e "$temp_dir/calls" ]] || fail 'ordinary values accessed bw'
+cp "$temp_dir/original.md" "$temp_dir/source.md"
+touch "$temp_dir/calls"
+
+render html --values "$temp_dir/values.yml" --bitwarden "$temp_dir/map.yml" < "$temp_dir/values.yml"
+grep -Fq 'SELECTED_SECRET &lt;script&gt; &amp; {{literal}}' "$temp_dir/output" || fail 'literal selected value did not render'
+! grep -Eq 'UNMAPPED_SECRET|RAW_ITEM_SECRET|RAW_LOGIN_SECRET' "$temp_dir/output" || fail 'unselected data rendered'
+[[ "$(mode "$temp_dir/output")" == 600 ]] || fail 'output permissions are not private'
+clean
+render html --bitwarden="$temp_dir/map.yml" --values "$temp_dir/values.yml"
+grep -Fq PUBLIC_OVERRIDE "$temp_dir/output" || fail 'later ordinary values did not win'
+! grep -q SELECTED_SECRET "$temp_dir/output" || fail 'overridden vault field leaked'
+render html --bitwarden "$temp_dir/map.yml" --values "$temp_dir/values.yml" --bitwarden "$temp_dir/map.yml"
+grep -q SELECTED_SECRET "$temp_dir/output" || fail 'interleaved later mapping did not win'
+cat > "$temp_dir/source.md" <<'EOF'
+---
+title: Public title
+provider: {bank: {account-name: SOURCE_OVERRIDE}}
+---
+{{ provider.bank.account-name }}
+EOF
+render html --bitwarden "$temp_dir/map.yml"
+grep -q SOURCE_OVERRIDE "$temp_dir/output" || fail 'source front matter did not win'
+! grep -q SELECTED_SECRET "$temp_dir/output" || fail 'source-overridden vault data leaked'
+cp "$temp_dir/original.md" "$temp_dir/source.md"
+
+for mode in locked missing hang oversized malformed wrong-id duplicate-json missing-field duplicate-field linked null large-value deep-json late-fail pandoc-error; do
+  export BW_TEST_MODE="$mode"
+  BAKEDOCS_RENDER_TIMEOUT=1 reject --bitwarden "$temp_dir/map.yml"
+done
+export BW_TEST_MODE=ok
+BW_SESSION='' reject --bitwarden "$temp_dir/map.yml"
+reject --bitwarden "$temp_dir/absent.yml"
+
+mkdir "$temp_dir/minimal-path"
+for tool in bash dirname readlink wc; do
+  ln -s "$(command -v "$tool")" "$temp_dir/minimal-path/$tool"
+done
+PATH="$temp_dir/minimal-path" render html --bitwarden "$temp_dir/map.yml" && fail 'missing bw succeeded'
+grep -q 'official bw executable is required' "$temp_dir/stderr" || fail 'missing bw diagnostic absent'
+ln -s "$temp_dir/bin/bw" "$temp_dir/minimal-path/bw"
+PATH="$temp_dir/minimal-path" render html --bitwarden "$temp_dir/map.yml" && fail 'missing timeout succeeded'
+grep -q 'requires GNU timeout' "$temp_dir/stderr" || fail 'missing timeout diagnostic absent'
+
+before="$(wc -l < "$temp_dir/calls")"
+for command in 'check' 'brands list' 'version'; do
+  read -r -a args <<< "$command"
+  if "$bakedocs" "${args[@]}" --bitwarden "$temp_dir/map.yml" > "$temp_dir/stdout" 2> "$temp_dir/stderr"; then
+    fail 'non-render command accepted --bitwarden'
+  fi
+done
+[[ "$(wc -l < "$temp_dir/calls")" == "$before" ]] || fail 'non-render command called bw'
+cp "$temp_dir/map.yml" "$HOME/mapping path.yml"
+render html '--bitwarden=~/mapping path.yml'
+(cd "$temp_dir"; render html --bitwarden map.yml)
+printf '{"provider":{"bank":{"account-name":"JSON_OVERRIDE"}}}\n' > "$temp_dir/values.json"
+render html --bitwarden "$temp_dir/map.yml" --values "$temp_dir/values.json"
+grep -q JSON_OVERRIDE "$temp_dir/output" || fail 'JSON values precedence failed'
+printf 'provider: {different: not-a-deep-merge}\n' > "$temp_dir/partial.yml"
+reject --bitwarden "$temp_dir/map.yml" --values "$temp_dir/partial.yml"
+
+layers=()
+for ((i=0; i<33; i++)); do layers+=(--bitwarden "$temp_dir/map.yml"); done
+reject "${layers[@]}"
+
+# Mapping grammar, exact quoted names, duplicate and prefix conflicts.
+printf '%s\n' 'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider.bank.account-name: "*Account*: O'"'"'Brien"}}' > "$temp_dir/exact.yml"
+BW_TEST_MODE=exact render html --bitwarden "$temp_dir/exact.yml"
+grep -q EXACT_SECRET "$temp_dir/output" || fail 'custom name was not matched literally'
+for contents in \
+  'bitwarden: {item-id: search-term, fields: {provider.bank.account-name: account-name}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider.bank: account-name, provider.bank: unused}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider.bank: account-name, provider.bank.name: unused}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider.bank: account-name, provider.other: account-name}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {title: account-name}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, unknown: yes, fields: {provider.bank: account-name}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {}}' \
+  'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider..bank: account-name}}' \
+  'bitwarden: &alias {item-id: 11111111-2222-3333-4444-555555555555}' ; do
+  printf '%s\n' "$contents" > "$temp_dir/bad.yml"
+  before="$(wc -l < "$temp_dir/calls")"
+  reject --bitwarden "$temp_dir/bad.yml"
+  [[ "$(wc -l < "$temp_dir/calls")" == "$before" ]] || fail 'invalid mapping called bw'
+done
+printf 'bitwarden:\n  item-id: 11111111-2222-3333-4444-555555555555\n  item-id: 11111111-2222-3333-4444-555555555555\n  fields:\n    provider.bank: account-name\n' > "$temp_dir/bad.yml"
+reject --bitwarden "$temp_dir/bad.yml"
+head -c 65537 /dev/zero > "$temp_dir/bad.yml"
+reject --bitwarden "$temp_dir/bad.yml"
+printf 'bitwarden: {item-id: 11111111-2222-3333-4444-555555555555, fields: {provider.bank.account-name: Account-name}}\n' > "$temp_dir/case.yml"
+reject --bitwarden "$temp_dir/case.yml"
+
+for key in title pagetitle author unused lang header-includes; do
+  printf '%s\n' '---' 'title: Public title' "$key: '{{ provider.bank.account-name }}'" '---' 'Body' > "$temp_dir/source.md"
+  reject --bitwarden "$temp_dir/map.yml"
+done
+printf '%s\n' '# {{ provider.bank.account-name }}' > "$temp_dir/source.md"
+reject --bitwarden "$temp_dir/map.yml"
+cp "$temp_dir/public.md" "$temp_dir/source.md"
+render html --bitwarden "$temp_dir/map.yml"
+! grep -q SELECTED_SECRET "$temp_dir/output" || fail 'unused vault metadata leaked'
+cp "$temp_dir/original.md" "$temp_dir/source.md"
+
+# Preserve the existing resource and interpolation boundaries in this mode.
+for body in '{{ missing.path }}' '[bad](javascript:alert)' '![bad](https://example.invalid/image.png)'; do
+  printf '%s\n' '---' 'title: Public title' '---' "$body" > "$temp_dir/source.md"
+  reject --offline --bitwarden "$temp_dir/map.yml"
+done
+cp "$temp_dir/original.md" "$temp_dir/source.md"
+render slides --bitwarden "$temp_dir/map.yml"
+grep -q SELECTED_SECRET "$temp_dir/output" || fail 'slides missing selected text'
+clean
+render pdf --offline --bitwarden "$temp_dir/map.yml"
+pdftotext "$temp_dir/output" "$temp_dir/pdf-text"
+pdfinfo "$temp_dir/output" > "$temp_dir/pdf-info"
+grep -q SELECTED_SECRET "$temp_dir/pdf-text" || fail 'PDF missing selected text'
+! grep -q SECRET "$temp_dir/pdf-info" || fail 'PDF metadata leaked selected text'
+! grep -Eq 'SECRET|FAKE_SESSION_ONLY' "$temp_dir/chromium-argv" || fail 'Chromium argv leaked data'
+clean
+export BW_TEST_MODE=chromium-error
+printf preserve > "$temp_dir/output"
+if render pdf --bitwarden "$temp_dir/map.yml"; then fail 'Chromium failure succeeded'; fi
+[[ "$(< "$temp_dir/output")" == preserve ]] || fail 'Chromium failure replaced output'
+clean
+export BW_TEST_MODE=ok
+"$root/s/install" --prefix "$temp_dir/prefix" > "$temp_dir/install-log" 2>&1
+bakedocs="$temp_dir/prefix/bin/bakedocs"
+render html --bitwarden "$temp_dir/map.yml"
+grep -q SELECTED_SECRET "$temp_dir/output" || fail 'installed provider failed'
+clean
+printf 'Bitwarden tests passed (synthetic vault only)\n'

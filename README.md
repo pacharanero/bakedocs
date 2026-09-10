@@ -78,6 +78,8 @@ bakedocs pdf agreement.md <brand-id> \
 
 ## Commands
 
+Document titles are optional. A non-empty metadata `title` wins; otherwise `bakedocs` uses the first non-empty level-one heading, then the source filename without its final extension. The heading remains in the body. Inferred headings are plain text and follow the same interpolation and Bitwarden metadata restrictions as explicit titles.
+
 Render any Markdown source using a discovered brand profile:
 
 ```console
@@ -109,6 +111,43 @@ Runtime overrides:
 | `BAKEDOCS_CHROMIUM` | First recognised Chromium on `$PATH` | Select the PDF renderer executable. |
 | `BAKEDOCS_RENDER_TIMEOUT` | `120` | Bound each Pandoc and Chromium process in seconds. |
 
+## Bitwarden Values
+
+The checkout supports explicit `--bitwarden mapping.yml` layers on `html`, `pdf`, and `slides`. The published `v0.1.0` release predates this feature. Ordinary public company information belongs in `--values`; neither values files, source front matter, brand profiles, nor `bakedocs check` can implicitly activate Bitwarden.
+
+Use only vault items you are authorised to access. Install the [official Bitwarden Password Manager CLI](https://bitwarden.com/help/cli/) as `bw` on `PATH`, and GNU `timeout` (or `gtimeout` from coreutils on macOS). Prepare an unlocked `BW_SESSION` outside `bakedocs` using your approved credential workflow. `bakedocs` never logs in, unlocks, syncs, searches by name, lists items, downloads attachments, or exports a vault. These tools are optional for ordinary rendering; no additional language runtime is required by the integration.
+
+A mapping contains one exact item UUID and explicitly selected custom fields. This example contains only fictional identifiers, not secret values:
+
+```yaml
+bitwarden:
+  item-id: 11111111-2222-3333-4444-555555555555
+  fields:
+    provider.bank.account-name: account-name
+    provider.bank.account-number: account-number
+```
+
+```console
+bakedocs pdf agreement.md example --brands-dir examples/brands \
+  --values provider.yml --bitwarden mapping.yml --values engagement.yml
+```
+
+Layers apply in argument order, including interleaved `--values` and `--bitwarden`; later top-level keys replace earlier keys, without recursive merging. Source front matter wins last. Both `--bitwarden path` and `--bitwarden=path` support the normal PWD-relative and `~/` path rules. A later override does not skip validation or retrieval of an explicitly requested earlier mapping.
+
+The mapping format is a restricted YAML schema: two-space-indented block maps or `{...}` flow maps, including `bitwarden: {item-id: UUID, fields: {provider.bank.account-name: account-name}}`. Mapping scalars are literal strings, without implicit type coercion. Single-quoted scalars support doubled apostrophes; double-quoted scalars use JSON escapes. Quote custom names containing punctuation such as `:`, `#`, or braces. Names are matched exactly and case-sensitively, never parsed as Markdown. YAML aliases, anchors, tags, document delimiters, multiline scalars, unknown keys, duplicate keys or selected names, empty mappings, and conflicting destination prefixes are rejected. Destinations must be nested dotted metadata paths with the normal identifier grammar. Only text and hidden custom fields with string values are supported; boolean and linked fields are rejected.
+
+Reference a selected field in document content as `{{ provider.bank.account-name }}`. Fetched values are literal text, including any `{{...}}`, HTML, or Markdown they contain. They never become writer metadata. References to vault values from any document metadata, including `title`, `pagetitle`, `author`, language, or unused metadata aliases, fail closed instead of leaking into automatic template fields or PDF properties. This restriction is intentional: render sensitive values in the document body, not front matter. Existing code, image, attribute, raw-content, and link-scheme restrictions still apply.
+
+### Protected Render Files
+
+Raw item responses and selected values travel only through bounded pipes and process memory. They are never written as vault exports, values files, logs, or manifests, and never passed in command arguments. Only mapped custom fields enter the renderer; unrelated item properties and custom fields are discarded. `BW_SESSION` is unexported in the parent and supplied only to the `bw` subprocess branch, not Pandoc, Chromium, or font inspection. Shell tracing and Bitwarden CLI debug mode are disabled. Tool stdout and stderr are discarded during protected rendering; failures report a generic diagnostic rather than risk echoing a value in a parser or browser error.
+
+Rendered artefacts are different: deliberately rendered values necessarily appear in the final document, its private staging file, and, for PDF, intermediate HTML. Protected renders create a `0700` `.bakedocs.*` directory beside the destination, use a `077` umask, disable core dumps, and publish a `0600` output through a same-filesystem atomic rename only after successful rendering and validation. An earlier output survives provider and renderer failures. Temporary files and the isolated Chromium profile are removed on normal exit and handled `HUP`, `INT`, or `TERM` termination.
+
+This is protected temporary storage, not secure erasure or a sandbox. Crashes, `SIGKILL`, power loss, filesystem snapshots/backups, swap, privileged or same-user processes, and the external tools' own behaviour remain outside the guarantee. Use an appropriately protected output filesystem, inspect abandoned `.bakedocs.*` directories after abnormal termination, and protect the final document. Trust the chosen executables and brand assets. Sensitive slides still load the pinned remote Reveal.js code when opened; that code can read the document, so do not use this mode unless that trust is acceptable. The tests use only a fake `bw`; no real vault integration has been exercised.
+
+Limits are 32 combined values/mapping layers, 64 KiB per mapping, 128 selected fields per mapping, 256 bytes per name/path, 32 destination segments, 1 MiB per item response, 1,024 custom fields per item, 64 KiB per selected value, and 32 JSON nesting levels. Each retrieval and selector has a timeout of at most 30 seconds (shortened by `BAKEDOCS_RENDER_TIMEOUT`), with a two-second forced-kill grace; mapping validation has a 30-second bound. The existing 1 MiB values-file and interpolation expansion limits remain. Missing items/fields, duplicate field names or JSON object keys, malformed or oversized responses, a locked/missing session, and subprocess failures preserve the previous output.
+
 ## Development Rendering
 
 Render the fixtures with the fictional public example profile:
@@ -134,7 +173,7 @@ reuse lint
 zizmor --strict-collection .
 ```
 
-The full rendering conformance suite also requires Poppler's `pdfinfo`, `pdffonts`, and `pdftotext` utilities. `reuse`, `zizmor`, `pdfinfo`, and `pdftotext` are development checks used locally and in CI; `pdffonts` is additionally a conditional runtime dependency for PDF output when the selected profile declares a font contract.
+The full rendering conformance suite also requires Poppler's `pdfinfo`, `pdffonts`, and `pdftotext` utilities, and GNU `timeout` or `gtimeout` for the isolated fake-Bitwarden suite. It never needs an installed `bw` or a real session. `reuse`, `zizmor`, `pdfinfo`, and `pdftotext` are development checks used locally and in CI; `pdffonts` is additionally a conditional runtime dependency for PDF output when the selected profile declares a font contract.
 
 ## Brand Layout
 
@@ -163,7 +202,7 @@ Review each font's provenance and redistribution terms before adding it to a pro
 - `examples/brands/` contains one fictional, explicitly selected example profile.
 - `bakedocs` is the public Bash command.
 - `fixtures/` contains synthetic Markdown designed to exercise common document and slide features.
-- `filters/` contains the strict metadata-interpolation and resource-policy filters.
+- `filters/` contains the strict metadata-interpolation and resource-policy filters and the bounded Bitwarden mapping/stream helper.
 - `styles/` contains separate document and presentation styles that consume shared brand tokens.
 - `templates/` contains explicit Pandoc HTML and Reveal.js 6 templates.
 - `out/` contains ignored generated bakeoff output; regenerate it rather than editing or committing it.

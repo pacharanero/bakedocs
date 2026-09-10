@@ -33,7 +33,7 @@ target="$(readlink "$entry")"
 release="$(cd "$(dirname "$entry")" && cd "$(dirname "$target")" && pwd)/bakedocs"
 [[ -x "$release" ]] || fail 'installed executable is missing'
 
-for payload in filters/metadata-interpolation.lua filters/resources.lua styles/document.css styles/reveal.css templates/document.html templates/reveal.html; do
+for payload in filters/metadata-interpolation.lua filters/bitwarden.lua filters/resources.lua styles/document.css styles/reveal.css templates/document.html templates/reveal.html; do
   [[ -s "${release%/bakedocs}/$payload" ]] || fail "installed payload is missing: $payload"
 done
 [[ ! -e "${release%/bakedocs}/examples" ]] || fail 'example profiles were installed with the runtime payload'

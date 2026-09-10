@@ -578,10 +578,27 @@ fi
 cat > "$work_dir/untitled.md" <<'EOF'
 # Untitled source
 EOF
-if "$root/bakedocs" html "$work_dir/untitled.md" test --brands-dir "$brand_root" --output "$work_dir/untitled.html" > /dev/null 2> "$temp_dir/title-error.txt"; then
-  fail 'untitled source unexpectedly succeeded'
-fi
-assert_contains 'source metadata requires a non-empty title' "$temp_dir/title-error.txt"
+"$root/bakedocs" html "$work_dir/untitled.md" test --brands-dir "$brand_root" --output "$work_dir/untitled.html" > /dev/null
+assert_contains '<title>Untitled source</title>' "$work_dir/untitled.html"
+cat > "$work_dir/untitled.md" <<'EOF'
+---
+title: " "
+---
+## A secondary heading
+
+Ordinary prose.
+EOF
+"$root/bakedocs" html "$work_dir/untitled.md" test --brands-dir "$brand_root" --output "$work_dir/untitled.html" > /dev/null
+assert_contains '<title>untitled</title>' "$work_dir/untitled.html"
+cat > "$work_dir/untitled.md" <<'EOF'
+---
+title: Explicit title
+---
+# First heading
+# Second heading
+EOF
+"$root/bakedocs" slides "$work_dir/untitled.md" test --brands-dir "$brand_root" --output "$work_dir/untitled.html" > /dev/null
+assert_contains '<title>Explicit title</title>' "$work_dir/untitled.html"
 
 cat > "$work_dir/unsafe-attributes.md" <<'EOF'
 ---

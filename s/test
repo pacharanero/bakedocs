@@ -28,3 +28,4 @@ tests/command-surface
 tests/installation
 tests/release-installation
 tests/rendering-conformance
+tests/bitwarden

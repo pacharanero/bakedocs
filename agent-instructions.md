@@ -36,16 +36,17 @@ This file is the entry point for AI coding agents. Read it before changing anyth
 - Do not add Rust, Python, Node, WeasyPrint, Vivliostyle, or another runtime merely to make the project look more complete. Admit complexity in response to evidence.
 - Do not copy logos, fonts, contracts, private administrative material, credentials, or personal data into this repository without checking provenance, redistribution rights, and necessity.
 - A configured font contract is fail-closed: keep font files local and embedded, preserve the 10 MiB bound, and verify the expected PostScript names before publishing PDF output.
+- Bitwarden is explicit `--bitwarden` opt-in only. Keep raw responses and selected values in bounded pipes/memory, never files or argv. Private rendered intermediates are allowed under the protected-render-files policy in `spec/standard.md`; suppress sensitive tool diagnostics and never pass vault metadata to writers. Use fake `bw` in tests; real vault access requires separate approval.
 - Never claim PDF/UA compliance from Chromium's `Tagged: yes` flag alone.
 
 ## Immediate Direction
 
-Continue hardening the smallest useful Bash CLI described by [R4](spec/roadmap.md):
+Continue hardening the smallest useful Bash CLI described by [R4](spec/completed-milestones.md):
 
 ```console
-bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
 bakedocs brands list
 bakedocs check
 ```
@@ -61,6 +62,7 @@ Prefer a single readable executable until functions are genuinely reusable. Keep
 - `s/render-all` - regenerate outputs for every profile in the selected root.
 - `s/lint` - check every executable shell script's syntax.
 - `s/test` - parse maintained Markdown and run command-surface, checkout-installation, release-bootstrap, and real-rendering conformance tests; the latter requires Chromium and Poppler utilities.
+- `tests/bitwarden` - exercise isolated fake-vault selection, failure, privacy, and real rendering with GNU `timeout`/`gtimeout`; no real vault or installed `bw` is needed.
 
 For presentation changes, serve the repository over HTTP and inspect every stable slide at 1280 x 720 and phone landscape. For print changes, inspect every page produced by the example profile and at least the cover for any additional test profile; successful process exit is not visual proof.
 

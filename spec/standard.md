@@ -44,9 +44,9 @@ Do not use “template” to mean all of these at once. A Pandoc HTML template, 
 Bare `bakedocs` prints compact help and exits successfully.
 
 ```text
-bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
-bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> ...] [--output <PATH>]
+bakedocs pdf <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+bakedocs html <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
+bakedocs slides <SOURCE> <BRAND-ID> [--values <PATH> | --bitwarden <PATH> ...] [--output <PATH>]
 bakedocs brands list
 bakedocs brands show <BRAND-ID>
 bakedocs check
@@ -58,6 +58,7 @@ Global options:
 ```text
     --brands-dir <PATH>
     --values <PATH>       # repeatable
+    --bitwarden <PATH>    # repeatable, interleaved with --values
     --output <PATH>
     --offline
 -V, --version
@@ -130,6 +131,8 @@ A future `bakedocs config` diagnostic command should print the selected source a
 The final schema will list candidates even when an explicit selector wins, with a `considered` boolean, so diagnostics remain complete.
 
 ## Path semantics
+
+Titles are optional: a non-empty metadata `title` takes precedence, followed by the first non-empty level-one heading in document order, then the source filename without its final extension. Inferred heading titles contain plain text only, leave the body heading intact, and are established before interpolation so the same metadata restrictions apply, including rejection of Bitwarden-derived title values.
 
 - Every CLI path argument expands bare `~` and leading `~/` through one shared Bash helper, including quoted and `--option=~/path` forms the shell does not expand.
 - Path values read from environment variables and config files use the same expansion helper.
@@ -214,6 +217,28 @@ Interpolation occurs after Markdown parsing in metadata, prose, headings, tables
 
 Images and raw nodes are forbidden in all document metadata. The renderer replaces merged CSS, header-include, body-include, logo, and Reveal.js URL metadata with trusted runtime and selected-profile values before writing output. Language tags are validated against the supported Pandoc translation set with value-free diagnostics.
 
+## Bitwarden values and protected render files
+
+R12 adopts **protected render files**, an explicit user-approved adjustment to the earlier no-secret-temporary-files proposal. Raw vault responses, exports, and selected values files must never be persisted. Rendered HTML/PDF staging files and Chromium's isolated profile may exist privately because the supported renderer consumes HTML files and publication must preserve an existing output on failure. This is not a claim of secure erasure, memory locking, or browser sandboxing.
+
+`--bitwarden <PATH>` is the only activation mechanism. It is repeatable on rendering commands and interleaves with `--values` in argument order. Brand metadata is first, source front matter is last, and each layer replaces matching top-level keys rather than recursively merging maps. No brand, ordinary values input, front matter, environment flag, or diagnostic command may activate the provider implicitly. An overridden mapping is still validated and retrieved. Public company information must not require a vault.
+
+The mapping has exactly `bitwarden: {item-id: UUID, fields: {destination.path: custom-field-name}}`. Its bounded schema reader accepts two-space block maps and flow maps, plain literal strings, single quotes with doubled apostrophes, and double quotes with JSON escapes. It deliberately does not implement general YAML: reject aliases, anchors, tags, multiline scalars, document delimiters, unknown/duplicate keys, duplicate selected custom names, empty mappings, and destination-prefix conflicts. All mapping scalars are strings without implicit type coercion. Destinations have at least two dot-separated segments matching `[A-Za-z_][A-Za-z0-9_-]*`. Custom names match exactly, case-sensitively, without Markdown interpretation. Only custom text/hidden fields (Bitwarden types 0/1) with string values are eligible; built-in fields, attachments, boolean fields, and linked fields are not supported.
+
+The schema-specific reader is intentional: Pandoc's metadata YAML reader parses strings as Markdown and reports duplicate keys as warnings, so using its resulting metadata tree would lose exact custom-field spelling and ambiguity information. A bounded literal mapping grammar avoids both problems without admitting a general YAML parser or another runtime. Ordinary values still use Pandoc's metadata parser, with warnings treated as failures in protected mode.
+
+The official `bw` executable on `PATH` is a conditional external capability, not a bundled dependency. The integration uses only `bw get item <validated-UUID> --nointeraction` with closed stdin and an externally prepared `BW_SESSION`. It never logs in, unlocks, syncs, searches by item name, lists, downloads attachments, or exports. GNU `timeout`/`gtimeout` is required in this mode for process-group timeout and forced termination; the weaker portable timeout fallback is not used for vault retrieval. Official command and noninteraction semantics were reviewed against the [Bitwarden CLI documentation](https://bitwarden.com/help/cli/). No additional language runtime or package dependency is admitted: Pandoc's existing bundled Lua and JSON decoder handle the bounded stream.
+
+Bash validates all public mapping plans before retrieval. A selector reads at most 1 MiB from each item pipe, rejects malformed JSON, duplicate JSON keys, wrong IDs, duplicate custom field names and missing/invalid selected fields, then writes only explicitly selected values in length-framed JSON directly to the render process's stdin. Raw item JSON exists only in the retrieval/selector pipe and memory. The render filter reads bounded frames, merges layers before interpolation, and removes vault-origin metadata before the writer runs. Fetched strings are terminal literals, never recursively interpolated or reparsed as Markdown. Any reference to vault values from document metadata, including otherwise unused aliases or automatic template fields, is an error. Body interpolation retains the existing resource and unsafe-link defenses.
+
+Limits: 32 combined values/mapping layers; 64 KiB per mapping; 128 selections per mapping; 256 bytes per custom name/destination; 32 destination segments; 1 MiB per item; 1,024 custom fields per item; 64 KiB per selected string; 32 JSON nesting levels; and 2 MiB per selected-data frame. Mapping planning is bounded to 30 seconds; each retrieval and selector is bounded to the lesser of 30 seconds and `BAKEDOCS_RENDER_TIMEOUT`, plus a two-second forced-kill grace. Rendering and interpolation retain their existing time, 1 MiB input-layer, 1 MiB expansion, and 32-reference-depth limits. The CLI checks subprocess/pipeline status before publishing even if a failing producer emitted parseable data.
+
+Secret values and session keys must not appear in argv or diagnostics. `BW_SESSION` is held as an unexported shell variable and exported only in the `bw` subprocess branch; Pandoc, Chromium, font inspection, and ordinary child utilities do not receive it. Shell tracing and Bitwarden debug mode are disabled. Protected rendering discards tool stdout/stderr rather than retaining or attempting to redact arbitrary Pandoc/browser errors. Failures report only a generic protected-render diagnostic. Public mapping paths and UUIDs are not secrets under this contract.
+
+Protected renders stage beside the destination in a `0700` directory with a `077` umask and core dumps disabled. Generated intermediate HTML, output staging, and the isolated browser profile are private; the published file is explicitly `0600`. Successful publication is a same-filesystem rename after renderer and font validation, not a cross-filesystem copy. Provider, parse, validation, timeout, and renderer failures leave an earlier destination unchanged. Cleanup removes staging on normal exit and handled HUP/INT/TERM termination. Neither intermediate retention nor secret-bearing manifests are provided.
+
+Limits of assurance must remain documented: abnormal termination such as SIGKILL/power loss may leave private files; cleanup is not secure deletion; snapshots, backups, swap, privileged/same-user inspection, concurrent same-user path replacement, and external tools' own storage behaviour are outside this boundary. Users must trust their executables, filesystem, source, and profile assets. The final document deliberately contains selected values, and remote Reveal.js code can read sensitive slides when opened. These controls do not classify or sanitise secrets manually supplied through ordinary inputs. Conformance tests use a fake `bw` and real renderers, never real vault access.
+
 ## Rendering pipeline
 
 ### HTML and PDF
@@ -268,7 +293,7 @@ Initial candidates:
 - Bound subprocess time, captured output, input size, embedded-resource size, and recursive include depth.
 - Use a new renderer profile or isolated user-data directory rather than a user's normal Chromium profile.
 - Redact credentials in URLs and environment diagnostics.
-- Never put secrets in generated HTML, manifests, logs, or PDF metadata.
+- Never put vault-origin secrets in manifests, logs, or HTML/PDF metadata. Deliberate body rendering may place them in final documents and private rendered temporary artefacts under the R12 protected-render-files policy; raw vault responses and selected values files remain non-persistent.
 
 ## Output contract
 

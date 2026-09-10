@@ -6,6 +6,8 @@
 -- never evaluates expressions or reparses a value as Markdown or HTML.
 
 local metadata
+local secrets = {}
+local in_metadata = false
 local resolved = {}
 local resolving = {}
 local errors = {}
@@ -45,6 +47,13 @@ local function scalar_text(value, value_type)
 end
 
 local function metadata_value(path)
+  if secrets[path] ~= nil then
+    if in_metadata then
+      record_error('Bitwarden values cannot be referenced from document metadata')
+      return ''
+    end
+    return secrets[path]
+  end
   if resolved[path] ~= nil then
     return resolved[path]
   end
@@ -232,12 +241,51 @@ local function interpolate_link(link)
   return link
 end
 
+-- Infer before interpolation so a heading cannot move vault values into metadata.
+-- Copy plain text only: heading links, images, and attributes remain in the body.
+local function default_title(document, meta)
+  if meta.title ~= nil and not pandoc.utils.stringify(meta.title):match('^%s*$') then
+    return
+  end
+  local title
+  pandoc.Pandoc(document.blocks):walk({Header = function(header)
+    local text = pandoc.utils.stringify(header.content)
+    if title == nil and header.level == 1 and not text:match('^%s*$') then
+      title = text
+    end
+  end})
+  if title == nil then
+    local source = PANDOC_STATE.input_files[1] or 'document'
+    title = source:match('([^/]+)$') or 'document'
+    title = title:gsub('%.[^.]+$', '')
+    if title == '' then title = 'document' end
+  end
+  meta.title = pandoc.MetaInlines({pandoc.Str(title)})
+end
+
 function Pandoc(document)
   metadata = document.meta
-  document = document:walk({
-    Inlines = interpolate_inlines,
-    Link = interpolate_link,
-  })
+  local protected = os.getenv('BAKEDOCS_BITWARDEN') == 'true'
+  if protected then
+    local provider = dofile(PANDOC_SCRIPT_FILE:gsub('metadata%-interpolation.lua$', 'bitwarden.lua'))
+    local public
+    metadata, public, secrets = provider.layers(document.meta)
+    default_title(document, public)
+    -- The writer never sees vault metadata. Reject indirect references from
+    -- public metadata too, including otherwise unused metadata fields.
+    in_metadata = true
+    public = pandoc.Pandoc({}, public):walk({Inlines = interpolate_inlines, Link = interpolate_link}).meta
+    in_metadata = false
+    document.meta = {}
+    document = document:walk({Inlines = interpolate_inlines, Link = interpolate_link})
+    document.meta = public
+  else
+    default_title(document, document.meta)
+    document = document:walk({
+      Inlines = interpolate_inlines,
+      Link = interpolate_link,
+    })
+  end
 
   local messages = {}
   for message in pairs(errors) do
